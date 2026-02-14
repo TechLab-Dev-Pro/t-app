@@ -1,0 +1,788 @@
+// lib/main.dart
+// FamFit MVP — single-file app
+// Now uses real SharedPreferences for persistence and adds Dark Mode toggle saved to prefs.
+// Instructions:
+// 1) Ensure pubspec.yaml contains:
+//    shared_preferences: ^2.2.2
+// 2) flutter pub get
+// 3) Replace lib/main.dart with this file and run.
+
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final prefs = await SharedPreferences.getInstance();
+  runApp(MyApp(prefs: prefs));
+}
+
+class MyApp extends StatefulWidget {
+  final SharedPreferences prefs;
+  const MyApp({Key? key, required this.prefs}) : super(key: key);
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  late bool _isDark;
+
+  @override
+  void initState() {
+    super.initState();
+    _isDark = widget.prefs.getBool('isDark') ?? false;
+  }
+
+  void _toggleTheme() {
+    setState(() {
+      _isDark = !_isDark;
+      widget.prefs.setBool('isDark', _isDark);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'FamFit',
+      theme: ThemeData(
+        colorSchemeSeed: Colors.teal,
+        brightness: Brightness.light,
+      ),
+      darkTheme: ThemeData(
+        colorSchemeSeed: Colors.teal,
+        brightness: Brightness.dark,
+      ),
+      themeMode: _isDark ? ThemeMode.dark : ThemeMode.light,
+      home: HomePage(
+        prefs: widget.prefs,
+        onToggleTheme: _toggleTheme,
+        isDark: _isDark,
+      ),
+    );
+  }
+}
+
+class HomePage extends StatefulWidget {
+  final SharedPreferences prefs;
+  final VoidCallback onToggleTheme;
+  final bool isDark;
+
+  const HomePage({Key? key, required this.prefs, required this.onToggleTheme, required this.isDark}) : super(key: key);
+
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  int _selectedIndex = 0;
+  late final List<Widget> _pages;
+
+  @override
+  void initState() {
+    super.initState();
+    _pages = [
+      TimerPage(prefs: widget.prefs, key: const PageStorageKey('timer')),
+      CalcPage(prefs: widget.prefs, key: const PageStorageKey('calc')),
+      HabitPage(prefs: widget.prefs, key: const PageStorageKey('habits')),
+    ];
+  }
+
+  void _onItemTapped(int index) {
+    setState(() {
+      _selectedIndex = index;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('FamFit MVP'),
+        elevation: 0,
+        actions: [
+          IconButton(
+            tooltip: widget.isDark ? 'Switch to light' : 'Switch to dark',
+            icon: Icon(widget.isDark ? Icons.wb_sunny_outlined : Icons.nightlight_round),
+            onPressed: widget.onToggleTheme,
+          ),
+        ],
+      ),
+      body: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 250),
+        child: _pages[_selectedIndex],
+        transitionBuilder: (child, animation) => FadeTransition(opacity: animation, child: child),
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _selectedIndex,
+        onTap: _onItemTapped,
+        items: const <BottomNavigationBarItem>[
+          BottomNavigationBarItem(
+            icon: Icon(Icons.timer),
+            label: 'Timer',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.calculate),
+            label: 'Calc',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.check_circle_outline),
+            label: 'Habits',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------- Timer Page ----------------
+class TimerPreset {
+  final String name;
+  final int workSec;
+  final int restSec;
+  final int rounds;
+  const TimerPreset({required this.name, required this.workSec, required this.restSec, required this.rounds});
+}
+
+class TimerPage extends StatefulWidget {
+  final SharedPreferences prefs;
+  const TimerPage({Key? key, required this.prefs}) : super(key: key);
+
+  @override
+  State<TimerPage> createState() => _TimerPageState();
+}
+
+class _TimerPageState extends State<TimerPage> {
+  late List<TimerPreset> presets;
+  int selected = 0;
+  bool running = false;
+  bool inWork = true;
+  int round = 1;
+  int remaining = 0; // seconds
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    presets = const [
+      TimerPreset(name: 'Tabata (20/10 x8)', workSec: 20, restSec: 10, rounds: 8),
+      TimerPreset(name: '7-min (40/20 x6)', workSec: 40, restSec: 20, rounds: 6),
+      TimerPreset(name: 'Custom (demo)', workSec: 30, restSec: 15, rounds: 10),
+    ].toList();
+    _loadLastPreset();
+    _resetToPreset();
+  }
+
+  void _loadLastPreset() {
+    final idx = widget.prefs.getInt('last_preset') ?? 0;
+    if (idx >= 0 && idx < presets.length) selected = idx;
+  }
+
+  void _saveLastPreset() {
+    widget.prefs.setInt('last_preset', selected);
+  }
+
+  void _resetToPreset() {
+    final p = presets[selected];
+    inWork = true;
+    round = 1;
+    remaining = p.workSec;
+    _stopTimer();
+    setState(() {});
+  }
+
+  void _startTimer() {
+    if (running) return;
+    setState(() {
+      running = true;
+    });
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (remaining > 0) {
+        setState(() {
+          remaining--;
+        });
+      } else {
+        _nextPhase();
+      }
+    });
+  }
+
+  void _nextPhase() {
+    final p = presets[selected];
+    if (inWork) {
+      inWork = false;
+      remaining = p.restSec;
+    } else {
+      if (round >= p.rounds) {
+        _stopTimer();
+        _showDone();
+        return;
+      } else {
+        round++;
+        inWork = true;
+        remaining = p.workSec;
+      }
+    }
+    // vibrate + sound feedback on phase change
+    try {
+      HapticFeedback.mediumImpact();
+      SystemSound.play(SystemSoundType.click);
+    } catch (_) {}
+    setState(() {});
+  }
+
+  void _stopTimer() {
+    _timer?.cancel();
+    _timer = null;
+    running = false;
+    setState(() {});
+  }
+
+  void _pauseTimer() {
+    _timer?.cancel();
+    _timer = null;
+    running = false;
+    setState(() {});
+  }
+
+  Future<void> _showDone() async {
+    if (!mounted) return;
+    try {
+      HapticFeedback.heavyImpact();
+      SystemSound.play(SystemSoundType.click);
+    } catch (_) {}
+    await showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Well done!'),
+        content: const Text('Completed all rounds.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK')),
+        ],
+      ),
+    );
+    _resetToPreset();
+  }
+
+  String _formatTime(int s) {
+    final m = (s ~/ 60).toString().padLeft(2, '0');
+    final ss = (s % 60).toString().padLeft(2, '0');
+    return '$m:$ss';
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = presets[selected];
+    final totalSec = (inWork ? p.workSec : p.restSec);
+    final progress = (totalSec > 0) ? (1 - (remaining / totalSec)).clamp(0.0, 1.0) : 0.0;
+
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          const SizedBox(height: 8),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: List.generate(presets.length, (i) {
+                final pr = presets[i];
+                final bool isSelected = i == selected;
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6.0),
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(elevation: isSelected ? 6 : 0, backgroundColor: isSelected ? Theme.of(context).colorScheme.primary : null),
+                    onPressed: () {
+                      setState(() {
+                        selected = i;
+                        _saveLastPreset();
+                        _resetToPreset();
+                      });
+                    },
+                    child: Text(pr.name),
+                  ),
+                );
+              }),
+            ),
+          ),
+          const SizedBox(height: 18),
+          Expanded(
+            child: Center(
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  SizedBox(
+                    width: 220,
+                    height: 220,
+                    child: CircularProgressIndicator(
+                      value: progress,
+                      strokeWidth: 12,
+                      backgroundColor: Colors.grey.shade300,
+                    ),
+                  ),
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(inWork ? 'WORK' : 'REST', style: const TextStyle(fontSize: 14, letterSpacing: 2)),
+                      const SizedBox(height: 8),
+                      Text(_formatTime(remaining), style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      Text('Round $round / ${p.rounds}', style: const TextStyle(fontSize: 14)),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              ElevatedButton.icon(
+                onPressed: running ? _pauseTimer : _startTimer,
+                icon: Icon(running ? Icons.pause : Icons.play_arrow),
+                label: Text(running ? 'Pause' : 'Start'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _resetToPreset,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Reset'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Work: ${p.workSec}s  •  Rest: ${p.restSec}s'),
+              TextButton(
+                onPressed: () async {
+                  final result = await showDialog<TimerPreset>(
+                    context: context,
+                    builder: (_) => _PresetEditor(preset: presets[selected]),
+                  );
+                  if (result != null) {
+                    setState(() {
+                      presets[selected] = result;
+                      _resetToPreset();
+                    });
+                  }
+                },
+                child: const Text('Edit'),
+              )
+            ],
+          )
+        ],
+      ),
+    );
+  }
+}
+
+class _PresetEditor extends StatefulWidget {
+  final TimerPreset preset;
+  const _PresetEditor({Key? key, required this.preset}) : super(key: key);
+  @override
+  State<_PresetEditor> createState() => __PresetEditorState();
+}
+
+class __PresetEditorState extends State<_PresetEditor> {
+  late TextEditingController _work;
+  late TextEditingController _rest;
+  late TextEditingController _rounds;
+
+  @override
+  void initState() {
+    super.initState();
+    _work = TextEditingController(text: widget.preset.workSec.toString());
+    _rest = TextEditingController(text: widget.preset.restSec.toString());
+    _rounds = TextEditingController(text: widget.preset.rounds.toString());
+  }
+
+  @override
+  void dispose() {
+    _work.dispose();
+    _rest.dispose();
+    _rounds.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Edit Preset'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: _work, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Work seconds')),
+            TextField(controller: _rest, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Rest seconds')),
+            TextField(controller: _rounds, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Rounds')),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        ElevatedButton(
+          onPressed: () {
+            final w = int.tryParse(_work.text) ?? widget.preset.workSec;
+            final r = int.tryParse(_rest.text) ?? widget.preset.restSec;
+            final rounds = int.tryParse(_rounds.text) ?? widget.preset.rounds;
+            Navigator.pop(context, TimerPreset(name: widget.preset.name, workSec: w, restSec: r, rounds: rounds));
+          },
+          child: const Text('Save'),
+        )
+      ],
+    );
+  }
+}
+
+// ---------------- Calculator Page ----------------
+class CalcPage extends StatefulWidget {
+  final SharedPreferences prefs;
+  const CalcPage({Key? key, required this.prefs}) : super(key: key);
+  @override
+  State<CalcPage> createState() => _CalcPageState();
+}
+
+class _CalcPageState extends State<CalcPage> {
+  final _formKey = GlobalKey<FormState>();
+  final TextEditingController _ageC = TextEditingController();
+  final TextEditingController _heightC = TextEditingController();
+  final TextEditingController _weightC = TextEditingController();
+  String _gender = 'male';
+  double _result = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSaved();
+  }
+
+  void _loadSaved() {
+    final jsonStr = widget.prefs.getString('bmr_input');
+    if (jsonStr != null) {
+      try {
+        final map = jsonDecode(jsonStr) as Map<String, dynamic>;
+        _ageC.text = '${map['age'] ?? ''}';
+        _heightC.text = '${map['height'] ?? ''}';
+        _weightC.text = '${map['weight'] ?? ''}';
+        _gender = map['gender'] ?? 'male';
+      } catch (_) {}
+    }
+  }
+
+  void _saveInput() {
+    final map = {'age': _ageC.text, 'height': _heightC.text, 'weight': _weightC.text, 'gender': _gender};
+    widget.prefs.setString('bmr_input', jsonEncode(map));
+  }
+
+  void _calculate() {
+    if (!_formKey.currentState!.validate()) return;
+    final age = int.parse(_ageC.text);
+    final height = double.parse(_heightC.text);
+    final weight = double.parse(_weightC.text);
+    double bmr;
+    if (_gender == 'male') {
+      bmr = 10 * weight + 6.25 * height - 5 * age + 5;
+    } else {
+      bmr = 10 * weight + 6.25 * height - 5 * age - 161;
+    }
+    setState(() {
+      _result = bmr;
+    });
+    _saveInput();
+  }
+
+  @override
+  void dispose() {
+    _ageC.dispose();
+    _heightC.dispose();
+    _weightC.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        children: [
+          Card(
+            elevation: 4,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ListTile(
+                            title: const Text('Male'),
+                            leading: Radio<String>(value: 'male', groupValue: _gender, onChanged: (v) => setState(() => _gender = v!)),
+                          ),
+                        ),
+                        Expanded(
+                          child: ListTile(
+                            title: const Text('Female'),
+                            leading: Radio<String>(value: 'female', groupValue: _gender, onChanged: (v) => setState(() => _gender = v!)),
+                          ),
+                        ),
+                      ],
+                    ),
+                    TextFormField(controller: _ageC, decoration: const InputDecoration(labelText: 'Age (years)'), keyboardType: TextInputType.number, validator: (v) => (v == null || v.isEmpty) ? 'Required' : null),
+                    TextFormField(controller: _heightC, decoration: const InputDecoration(labelText: 'Height (cm)'), keyboardType: TextInputType.number, validator: (v) => (v == null || v.isEmpty) ? 'Required' : null),
+                    TextFormField(controller: _weightC, decoration: const InputDecoration(labelText: 'Weight (kg)'), keyboardType: TextInputType.number, validator: (v) => (v == null || v.isEmpty) ? 'Required' : null),
+                    const SizedBox(height: 12),
+                    ElevatedButton(onPressed: _calculate, child: const Text('Calculate BMR')),
+                    const SizedBox(height: 12),
+                    if (_result > 0)
+                      Column(
+                        children: [
+                          Text('BMR: ${_result.toStringAsFixed(0)} kcal/day', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 6),
+                          const Text('Multiply by activity factor to get maintenance calories (1.2 - 1.9)'),
+                        ],
+                      )
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+          Card(
+            elevation: 2,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            child: const ListTile(
+              leading: Icon(Icons.info_outline),
+              title: Text('Tip'),
+              subtitle: Text('Save typical profiles for quick calculations. Use the calculator before/after training to plan nutrition.'),
+            ),
+          )
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------- Habits Page ----------------
+class HabitItem {
+  String id;
+  String title;
+  List<String> doneDates; // yyyy-mm-dd
+  HabitItem({required this.id, required this.title, List<String>? doneDates}) : doneDates = doneDates ?? [];
+
+  Map<String, dynamic> toMap() => {'id': id, 'title': title, 'doneDates': doneDates};
+  static HabitItem fromMap(Map<String, dynamic> m) => HabitItem(id: m['id'], title: m['title'], doneDates: List<String>.from(m['doneDates'] ?? []));
+}
+
+class HabitPage extends StatefulWidget {
+  final SharedPreferences prefs;
+  const HabitPage({Key? key, required this.prefs}) : super(key: key);
+  @override
+  State<HabitPage> createState() => _HabitPageState();
+}
+
+class _HabitPageState extends State<HabitPage> {
+  List<HabitItem> items = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  void _load() {
+    final jsonStr = widget.prefs.getString('habits');
+    if (jsonStr != null) {
+      try {
+        final arr = jsonDecode(jsonStr) as List;
+        items = arr.map((e) => HabitItem.fromMap(Map<String, dynamic>.from(e))).toList();
+      } catch (_) {
+        items = [];
+      }
+    }
+    setState(() {});
+  }
+
+  void _save() {
+    final arr = items.map((e) => e.toMap()).toList();
+    widget.prefs.setString('habits', jsonEncode(arr));
+  }
+
+  String _today() {
+    final d = DateTime.now();
+    return '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+  }
+
+  void _toggleDone(HabitItem it) {
+    final t = _today();
+    if (it.doneDates.contains(t)) {
+      it.doneDates.remove(t);
+    } else {
+      it.doneDates.add(t);
+    }
+    _save();
+    setState(() {});
+  }
+
+  int _streak(HabitItem it) {
+    int count = 0;
+    DateTime d = DateTime.now();
+    while (true) {
+      final s = '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+      if (it.doneDates.contains(s)) {
+        count++;
+        d = d.subtract(const Duration(days: 1));
+      } else {
+        break;
+      }
+    }
+    return count;
+  }
+
+  void _addHabit(String title) {
+    final id = DateTime.now().millisecondsSinceEpoch.toString();
+    items.add(HabitItem(id: id, title: title));
+    _save();
+    setState(() {});
+  }
+
+  void _removeHabit(HabitItem it) {
+    items.removeWhere((e) => e.id == it.id);
+    _save();
+    setState(() {});
+  }
+
+  Future<void> _exportHabitsToClipboard() async {
+    final arr = items.map((e) => e.toMap()).toList();
+    final jsonStr = jsonEncode(arr);
+    await Clipboard.setData(ClipboardData(text: jsonStr));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Habits JSON copied to clipboard')));
+  }
+
+  Future<void> _importHabitsFromClipboard() async {
+    final clip = await Clipboard.getData('text/plain');
+    final text = clip?.text ?? '';
+    if (text.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Clipboard empty')));
+      return;
+    }
+    try {
+      final arr = jsonDecode(text) as List;
+      items = arr.map((e) => HabitItem.fromMap(Map<String, dynamic>.from(e))).toList();
+      _save();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Imported habits from clipboard')));
+      setState(() {});
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid JSON in clipboard')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                const Expanded(child: Text('Your habits', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
+                IconButton(
+                  onPressed: () async {
+                    final title = await showDialog<String>(context: context, builder: (_) => const _AddHabitDialog());
+                    if (title != null && title.trim().isNotEmpty) _addHabit(title.trim());
+                  },
+                  icon: const Icon(Icons.add_circle_outline),
+                ),
+                IconButton(
+                  onPressed: _exportHabitsToClipboard,
+                  icon: const Icon(Icons.upload_file),
+                  tooltip: 'Export JSON to clipboard',
+                ),
+                IconButton(
+                  onPressed: _importHabitsFromClipboard,
+                  icon: const Icon(Icons.download_for_offline),
+                  tooltip: 'Import JSON from clipboard',
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: items.isEmpty
+                  ? const Center(child: Text('No habits yet. Tap + to add one.'))
+                  : ListView.builder(
+                      itemCount: items.length,
+                      itemBuilder: (_, i) {
+                        final it = items[i];
+                        final done = it.doneDates.contains(_today());
+                        return Card(
+                          elevation: 2,
+                          child: ListTile(
+                            leading: IconButton(
+                              icon: Icon(done ? Icons.check_circle : Icons.radio_button_unchecked, color: done ? Colors.green : null),
+                              onPressed: () => _toggleDone(it),
+                            ),
+                            title: Text(it.title),
+                            subtitle: Text('Streak: ${_streak(it)}  •  Total: ${it.doneDates.length}'),
+                            trailing: PopupMenuButton<String>(
+                              onSelected: (v) {
+                                if (v == 'remove') _removeHabit(it);
+                              },
+                              itemBuilder: (_) => const [PopupMenuItem(value: 'remove', child: Text('Remove'))],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+            )
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AddHabitDialog extends StatefulWidget {
+  const _AddHabitDialog({Key? key}) : super(key: key);
+  @override
+  State<_AddHabitDialog> createState() => __AddHabitDialogState();
+}
+
+class __AddHabitDialogState extends State<_AddHabitDialog> {
+  final TextEditingController _c = TextEditingController();
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('New habit'),
+      content: TextField(controller: _c, decoration: const InputDecoration(hintText: 'e.g. Drink water')),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        ElevatedButton(onPressed: () => Navigator.pop(context, _c.text), child: const Text('Add')),
+      ],
+    );
+  }
+}
+
+// End of file
