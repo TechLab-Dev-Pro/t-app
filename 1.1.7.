@@ -1,0 +1,1208 @@
+// lib/main.dart
+// FamFit — updated audio mapping for user-provided mp3 files
+// Assets expected (in project root assets/sounds/):
+// - opening_bell.mp3
+// - boxing_bell_last_round.mp3
+// - round_bell_two_chimes.mp3
+// - 10seconds_knocks.mp3
+
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/cupertino.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:audioplayers/audioplayers.dart';
+
+class TimerPreset {
+  String name;
+  int warmup;
+  int work;
+  int rest;
+  int rounds;
+  int cooldown;
+
+  TimerPreset(
+      {required this.name,
+      this.warmup = 0,
+      this.work = 20,
+      this.rest = 10,
+      this.rounds = 8,
+      this.cooldown = 0});
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'warmup': warmup,
+        'work': work,
+        'rest': rest,
+        'rounds': rounds,
+        'cooldown': cooldown,
+      };
+
+  static TimerPreset fromJson(Map<String, dynamic> m) => TimerPreset(
+        name: (m['name'] ?? 'Preset').toString(),
+        warmup: _toInt(m['warmup'], 0),
+        work: _toInt(m['work'], 20),
+        rest: _toInt(m['rest'], 10),
+        rounds: _toInt(m['rounds'], 8),
+        cooldown: _toInt(m['cooldown'], 0),
+      );
+
+  static int _toInt(dynamic v, int f) {
+    if (v == null) return f;
+    if (v is int) return v;
+    if (v is double) return v.toInt();
+    return int.tryParse(v.toString()) ?? f;
+  }
+
+  String stableKey() => jsonEncode(toJson());
+}
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final prefs = await SharedPreferences.getInstance();
+  runApp(MyApp(prefs: prefs));
+}
+
+class MyApp extends StatefulWidget {
+  final SharedPreferences prefs;
+  const MyApp({Key? key, required this.prefs}) : super(key: key);
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  bool _isDark = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _isDark = widget.prefs.getBool('isDark') ?? false;
+  }
+
+  void _toggleTheme() {
+    setState(() => _isDark = !_isDark);
+    widget.prefs.setBool('isDark', _isDark);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'FamFit',
+      debugShowCheckedModeBanner: false,
+      theme:
+          ThemeData(primarySwatch: Colors.teal, brightness: Brightness.light),
+      darkTheme:
+          ThemeData(primarySwatch: Colors.teal, brightness: Brightness.dark),
+      themeMode: _isDark ? ThemeMode.dark : ThemeMode.light,
+      home: HomePage(
+          prefs: widget.prefs, onToggleTheme: _toggleTheme, isDark: _isDark),
+    );
+  }
+}
+
+class HomePage extends StatefulWidget {
+  final SharedPreferences prefs;
+  final VoidCallback onToggleTheme;
+  final bool isDark;
+  const HomePage(
+      {Key? key,
+      required this.prefs,
+      required this.onToggleTheme,
+      required this.isDark})
+      : super(key: key);
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  int _index = 0;
+  late final List<Widget> _pages;
+
+  @override
+  void initState() {
+    super.initState();
+    _pages = [
+      TimerScreen(prefs: widget.prefs),
+      CalcPage(prefs: widget.prefs),
+      HabitsPage(prefs: widget.prefs)
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('FamFit'),
+        actions: [
+          IconButton(
+              icon: Icon(widget.isDark
+                  ? Icons.wb_sunny_outlined
+                  : Icons.nightlight_round),
+              onPressed: widget.onToggleTheme),
+          IconButton(
+              icon: const Icon(Icons.settings),
+              onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => SettingsPage(prefs: widget.prefs)))),
+        ],
+      ),
+      body: _pages[_index],
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _index,
+        onTap: (i) => setState(() => _index = i),
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.timer), label: 'Timer'),
+          BottomNavigationBarItem(icon: Icon(Icons.calculate), label: 'BMR'),
+          BottomNavigationBarItem(
+              icon: Icon(Icons.check_circle_outline), label: 'Habits'),
+        ],
+      ),
+    );
+  }
+}
+
+// Settings page
+class SettingsPage extends StatefulWidget {
+  final SharedPreferences prefs;
+  const SettingsPage({Key? key, required this.prefs}) : super(key: key);
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  bool notifyLast10Work = false;
+
+  @override
+  void initState() {
+    super.initState();
+    notifyLast10Work = widget.prefs.getBool('notify_last10_work') ?? false;
+  }
+
+  void _setNotify(bool v) {
+    setState(() => notifyLast10Work = v);
+    widget.prefs.setBool('notify_last10_work', v);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Settings')),
+      body: ListView(
+        children: [
+          SwitchListTile(
+            title: const Text('Notify last 10s of WORK phase'),
+            subtitle: const Text(
+                'Play a short triple knock at 10 seconds remaining in each work interval'),
+            value: notifyLast10Work,
+            onChanged: _setNotify,
+          ),
+          const ListTile(
+              title: Text('Tip'),
+              subtitle: Text('You can toggle app theme from the main screen')),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------- Timer Screen ----------
+class TimerScreen extends StatefulWidget {
+  final SharedPreferences prefs;
+  const TimerScreen({Key? key, required this.prefs}) : super(key: key);
+  @override
+  State<TimerScreen> createState() => _TimerScreenState();
+}
+
+class _TimerScreenState extends State<TimerScreen> {
+  static const int SLOTS = 8;
+  late List<TimerPreset?> quickSlots;
+  late TimerPreset current;
+
+  // controllers & focus
+  late TextEditingController nameC, warmC, workC, restC, roundsC, coolC;
+  late FocusNode nameFocus;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadQuickSlots();
+    _loadLastPreset();
+    _initControllers();
+  }
+
+  void _initControllers() {
+    nameC = TextEditingController(text: current.name);
+    warmC = TextEditingController(text: current.warmup.toString());
+    workC = TextEditingController(text: current.work.toString());
+    restC = TextEditingController(text: current.rest.toString());
+    roundsC = TextEditingController(text: current.rounds.toString());
+    coolC = TextEditingController(text: current.cooldown.toString());
+    nameFocus = FocusNode();
+    nameFocus.canRequestFocus = true;
+  }
+
+  void _disposeControllers() {
+    nameC.dispose();
+    warmC.dispose();
+    workC.dispose();
+    restC.dispose();
+    roundsC.dispose();
+    coolC.dispose();
+    nameFocus.dispose();
+  }
+
+  void _loadQuickSlots() {
+    quickSlots = List<TimerPreset?>.filled(SLOTS, null, growable: true);
+    final stored = widget.prefs.getStringList('quick_slots') ?? [];
+    for (int i = 0; i < stored.length && i < SLOTS; i++) {
+      final s = stored[i];
+      if (s.trim().isEmpty) continue;
+      try {
+        quickSlots[i] =
+            TimerPreset.fromJson(jsonDecode(s) as Map<String, dynamic>);
+      } catch (_) {
+        quickSlots[i] = null;
+      }
+    }
+  }
+
+  void _saveQuickSlots() {
+    final list =
+        quickSlots.map((p) => p == null ? '' : jsonEncode(p.toJson())).toList();
+    widget.prefs.setStringList('quick_slots', list);
+  }
+
+  void _loadLastPreset() {
+    final dynamic stored = widget.prefs.get('last_preset');
+    if (stored != null) {
+      try {
+        if (stored is String) {
+          final map = jsonDecode(stored) as Map<String, dynamic>;
+          current = TimerPreset.fromJson(map);
+          return;
+        }
+      } catch (_) {}
+    }
+    current = TimerPreset(
+        name: 'Custom', warmup: 0, work: 20, rest: 10, rounds: 8, cooldown: 0);
+  }
+
+  void _saveLastPreset() {
+    widget.prefs.setString('last_preset', jsonEncode(current.toJson()));
+  }
+
+  void _applySlot(int i) {
+    final p = quickSlots[i];
+    if (p == null) return;
+    setState(() {
+      current = TimerPreset(
+          name: p.name,
+          warmup: p.warmup,
+          work: p.work,
+          rest: p.rest,
+          rounds: p.rounds,
+          cooldown: p.cooldown);
+      _disposeControllers();
+      _initControllers();
+    });
+    _saveLastPreset();
+  }
+
+  void _saveToSlot(int i) {
+    quickSlots[i] = TimerPreset(
+        name: current.name,
+        warmup: current.warmup,
+        work: current.work,
+        rest: current.rest,
+        rounds: current.rounds,
+        cooldown: current.cooldown);
+    _saveQuickSlots();
+    setState(() {});
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('Saved to slot')));
+  }
+
+  // MRU behavior
+  void _rememberCurrentPreset() {
+    final key = current.stableKey();
+    int found = -1;
+    for (int i = 0; i < quickSlots.length; i++) {
+      final q = quickSlots[i];
+      if (q != null && q.stableKey() == key) {
+        found = i;
+        break;
+      }
+    }
+    if (found == 0) return;
+    if (found > 0) {
+      final existing = quickSlots.removeAt(found);
+      quickSlots.insert(0, existing);
+      if (quickSlots.length > SLOTS) quickSlots = quickSlots.sublist(0, SLOTS);
+    } else {
+      quickSlots.insert(
+          0,
+          TimerPreset(
+              name: current.name,
+              warmup: current.warmup,
+              work: current.work,
+              rest: current.rest,
+              rounds: current.rounds,
+              cooldown: current.cooldown));
+      if (quickSlots.length > SLOTS) quickSlots = quickSlots.sublist(0, SLOTS);
+    }
+    _saveQuickSlots();
+    setState(() {});
+  }
+
+  void _startSession() {
+    // update current from controllers
+    setState(() {
+      current.name = nameC.text.trim().isEmpty ? 'Custom' : nameC.text.trim();
+      current.warmup = int.tryParse(warmC.text) ?? 0;
+      current.work = int.tryParse(workC.text) ?? 20;
+      current.rest = int.tryParse(restC.text) ?? 10;
+      current.rounds = int.tryParse(roundsC.text) ?? 8;
+      current.cooldown = int.tryParse(coolC.text) ?? 0;
+    });
+    _saveLastPreset();
+    _rememberCurrentPreset();
+    // pass prefs to timer so it can read settings
+    Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => FullscreenTimer(preset: current, prefs: widget.prefs)));
+  }
+
+  @override
+  void dispose() {
+    _disposeControllers();
+    super.dispose();
+  }
+
+  Widget _buildSlot(int i) {
+    final p = quickSlots[i];
+    return GestureDetector(
+      onTap: p == null ? null : () => _applySlot(i),
+      onLongPress: () async {
+        final ok = await showDialog<bool>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('Save to slot'),
+            content: Text('Save current preset to slot ${i + 1}?'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('Cancel')),
+              ElevatedButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('Save')),
+            ],
+          ),
+        );
+        if (ok == true) _saveToSlot(i);
+      },
+      child: Container(
+        width: 140,
+        margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+              color: p == null ? Colors.grey.shade300 : Colors.teal, width: 2),
+          color: p == null ? Colors.grey[100] : Colors.white,
+        ),
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Text('Slot ${i + 1}',
+              style: const TextStyle(
+                  fontSize: 16,
+                  color: Colors.black54,
+                  fontWeight: FontWeight.w700)),
+          const SizedBox(height: 10),
+          if (p == null) ...[
+            const Icon(Icons.add, color: Colors.black26, size: 36),
+            const SizedBox(height: 8),
+            const Text('Empty',
+                style: TextStyle(fontSize: 16, color: Colors.black26)),
+          ] else ...[
+            Text(p.name,
+                style:
+                    const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis),
+            const SizedBox(height: 8),
+            Text('${p.work}s / ${p.rest}s x${p.rounds}',
+                style: const TextStyle(fontSize: 16, color: Colors.black54)),
+          ]
+        ]),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      child: Padding(
+        padding: const EdgeInsets.all(14.0),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          SizedBox(
+              height: 160,
+              child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: SLOTS,
+                  itemBuilder: (_, i) => _buildSlot(i))),
+          const SizedBox(height: 14),
+          Card(
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            elevation: 4,
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(children: [
+                // Preset name — has focus node and will unfocus on editing complete
+                TextField(
+                  controller: nameC,
+                  focusNode: nameFocus,
+                  onEditingComplete: () {
+                    // unfocus + hide keyboard + collapse selection so caret stops blinking
+                    try {
+                      nameFocus.unfocus();
+                    } catch (_) {}
+                    SystemChannels.textInput.invokeMethod('TextInput.hide');
+                    nameC.selection =
+                        TextSelection.collapsed(offset: nameC.text.length);
+                    setState(() {});
+                  },
+                  onSubmitted: (_) {
+                    try {
+                      nameFocus.unfocus();
+                    } catch (_) {}
+                    SystemChannels.textInput.invokeMethod('TextInput.hide');
+                    nameC.selection =
+                        TextSelection.collapsed(offset: nameC.text.length);
+                    setState(() {});
+                  },
+                  style: const TextStyle(
+                      fontSize: 20, fontWeight: FontWeight.w700),
+                  decoration: const InputDecoration(
+                      labelText: 'Preset name (optional)',
+                      labelStyle:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                ),
+                const SizedBox(height: 12),
+                Row(children: [
+                  Expanded(child: _numberField('Warmup (s)', warmC)),
+                  const SizedBox(width: 10),
+                  Expanded(child: _numberField('Cooldown (s)', coolC))
+                ]),
+                const SizedBox(height: 12),
+                Row(children: [
+                  Expanded(child: _numberField('Work (s)', workC)),
+                  const SizedBox(width: 10),
+                  Expanded(child: _numberField('Rest (s)', restC)),
+                  const SizedBox(width: 10),
+                  SizedBox(width: 140, child: _numberField('Rounds', roundsC)),
+                ]),
+                const SizedBox(height: 12),
+                const Text('Tap slot to load • Long press to save',
+                    style: TextStyle(fontSize: 16)),
+              ]),
+            ),
+          ),
+          const SizedBox(height: 18),
+          // BIG START BUTTON (moved under editor)
+          Center(
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 36, horizontal: 48),
+                textStyle:
+                    const TextStyle(fontSize: 32, fontWeight: FontWeight.bold),
+              ),
+              onPressed: _startSession,
+              child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.play_arrow),
+                SizedBox(width: 12),
+                Text('Start')
+              ]),
+            ),
+          ),
+          const SizedBox(height: 18),
+        ]),
+      ),
+    );
+  }
+
+  Widget _numberField(String label, TextEditingController c) {
+    // read-only field that opens a wheel picker
+    int min = label.toLowerCase().contains('round') ? 1 : 0;
+    int max = label.toLowerCase().contains('round') ? 100 : 600;
+    int initial = int.tryParse(c.text) ??
+        (label.toLowerCase().contains('round') ? 8 : 20);
+
+    return GestureDetector(
+      onTap: () async {
+        // Prevent the name field from grabbing focus while picker opens/after it closes
+        try {
+          nameFocus.canRequestFocus = false;
+        } catch (_) {}
+        FocusScope.of(context).unfocus();
+        await _showNumberPicker(label, c, min, max, initial);
+        // small delay to ensure modal fully closed, then re-enable focus requests but keep unfocused
+        await Future.delayed(const Duration(milliseconds: 50));
+        try {
+          nameFocus.canRequestFocus = true;
+        } catch (_) {}
+        FocusScope.of(context).unfocus();
+      },
+      child: AbsorbPointer(
+        child: TextField(
+          controller: c,
+          readOnly: true,
+          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+          decoration: InputDecoration(
+            labelText: label,
+            labelStyle: const TextStyle(fontSize: 16),
+            suffixIcon: const Icon(Icons.arrow_drop_up),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showNumberPicker(String label, TextEditingController c, int min,
+      int max, int initial) async {
+    int selected = (initial).clamp(min, max);
+    await showModalBottomSheet(
+      context: context,
+      builder: (ctx) {
+        return SizedBox(
+          height: 320,
+          child: Column(
+            children: [
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(label,
+                        style: const TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.bold)),
+                    TextButton(
+                      onPressed: () {
+                        c.text = selected.toString();
+                        Navigator.of(ctx).pop();
+                      },
+                      child: const Text('OK'),
+                    )
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: CupertinoPicker(
+                  scrollController:
+                      FixedExtentScrollController(initialItem: selected - min),
+                  itemExtent: 36,
+                  onSelectedItemChanged: (i) {
+                    selected = min + i;
+                  },
+                  children: List<Widget>.generate(max - min + 1, (i) {
+                    final val = min + i;
+                    return Center(
+                        child: Text(val.toString(),
+                            style: const TextStyle(
+                                fontSize: 20, fontWeight: FontWeight.w600)));
+                  }),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+      isScrollControlled: false,
+    );
+    // ensure no field is focused and keyboard won't pop
+    FocusScope.of(context).unfocus();
+    setState(() {});
+  }
+}
+
+// ---------- Fullscreen Timer ----------
+class FullscreenTimer extends StatefulWidget {
+  final TimerPreset preset;
+  final SharedPreferences prefs;
+  const FullscreenTimer({Key? key, required this.preset, required this.prefs})
+      : super(key: key);
+  @override
+  State<FullscreenTimer> createState() => _FullscreenTimerState();
+}
+
+enum Phase { warmup, work, rest, cooldown }
+
+class _FullscreenTimerState extends State<FullscreenTimer> {
+  late List<Map<String, dynamic>> segments;
+  int idx = 0;
+  int remaining = 0;
+  Timer? timer;
+  bool running = false;
+  bool _notifiedForSegment = false;
+  late bool notifyLast10;
+
+  // audio player
+  final AudioPlayer _audioPlayer = AudioPlayer();
+
+  @override
+  void initState() {
+    super.initState();
+    _buildSegments();
+    remaining = segments.isNotEmpty ? segments[0]['seconds'] as int : 0;
+    notifyLast10 = widget.prefs.getBool('notify_last10_work') ?? false;
+  }
+
+  Future<void> _playAsset(String assetPath) async {
+    // assetPath like 'sounds/opening_bell.mp3' corresponds to assets/sounds/opening_bell.mp3
+    try {
+      await _audioPlayer.play(AssetSource(assetPath));
+    } catch (e) {
+      // explicit fallback: 3x system click
+      try {
+        for (int i = 0; i < 3; i++) {
+          SystemSound.play(SystemSoundType.click);
+          await Future.delayed(const Duration(milliseconds: 200));
+        }
+      } catch (_) {}
+    }
+  }
+
+  void _buildSegments() {
+    segments = [];
+    if (widget.preset.warmup > 0) {
+      segments.add(
+          {'phase': Phase.warmup, 'seconds': widget.preset.warmup, 'round': 0});
+    }
+    for (int r = 1; r <= widget.preset.rounds; r++) {
+      segments.add(
+          {'phase': Phase.work, 'seconds': widget.preset.work, 'round': r});
+      segments.add(
+          {'phase': Phase.rest, 'seconds': widget.preset.rest, 'round': r});
+    }
+    if (widget.preset.cooldown > 0) {
+      segments.add({
+        'phase': Phase.cooldown,
+        'seconds': widget.preset.cooldown,
+        'round': 0
+      });
+    }
+  }
+
+  void _tick() {
+    if (remaining > 0) {
+      setState(() => remaining--);
+      _checkNotify();
+    } else {
+      _next();
+    }
+  }
+
+  void _checkNotify() {
+    // notify at 10s remaining in WORK phase
+    if (!notifyLast10) return;
+    if (segments.isEmpty || idx >= segments.length) return;
+    final seg = segments[idx];
+    if (seg['phase'] == Phase.work) {
+      if (!_notifiedForSegment && remaining == 10) {
+        _notifiedForSegment = true;
+        _playAsset('sounds/10seconds_knocks.mp3');
+      }
+    }
+  }
+
+  Future<void> _start() async {
+    if (running) return;
+    // play opening bell for the very first start
+    if (idx == 0 &&
+        remaining ==
+            (segments.isNotEmpty ? segments[0]['seconds'] as int : 0)) {
+      await _playAsset('sounds/opening_bell.mp3');
+    }
+    running = true;
+    timer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+    setState(() {});
+  }
+
+  void _pause() {
+    timer?.cancel();
+    timer = null;
+    running = false;
+    setState(() {});
+  }
+
+  void _stop() {
+    timer?.cancel();
+    timer = null;
+    running = false;
+    idx = 0;
+    _notifiedForSegment = false;
+    remaining = segments.isNotEmpty ? segments[0]['seconds'] as int : 0;
+    setState(() {});
+  }
+
+  Future<void> _next() async {
+    // if this is the last segment -> play final boxing bell and finish
+    if (idx >= segments.length - 1) {
+      await _playAsset('sounds/boxing_bell_last_round.mp3');
+      await _finish();
+      return;
+    }
+
+    // normal transition: play two-chime bell (for start/end of segments)
+    await _playAsset('sounds/round_bell_two_chimes.mp3');
+
+    try {
+      HapticFeedback.mediumImpact();
+      SystemSound.play(SystemSoundType.click);
+    } catch (_) {}
+
+    idx++;
+    _notifiedForSegment = false; // reset for next segment
+    remaining = segments[idx]['seconds'] as int;
+    setState(() {});
+  }
+
+  Future<void> _finish() async {
+    timer?.cancel();
+    timer = null;
+    running = false;
+    try {
+      HapticFeedback.heavyImpact();
+      SystemSound.play(SystemSoundType.click);
+    } catch (_) {}
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+          title: const Text('Done'),
+          content: const Text('Session complete'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('OK'))
+          ]),
+    );
+    if (mounted) Navigator.pop(context);
+  }
+
+  Color _bg(Map<String, dynamic>? seg) {
+    if (seg == null) return Colors.black;
+    final phase = seg['phase'] as Phase;
+    switch (phase) {
+      case Phase.warmup:
+        return Colors.blue.shade700;
+      case Phase.work:
+        return Colors.red.shade700;
+      case Phase.rest:
+        return Colors.orange.shade700;
+      case Phase.cooldown:
+        return Colors.purple.shade700;
+    }
+  }
+
+  Color _textColor(Map<String, dynamic>? seg) => Colors.white;
+
+  String _label(Map<String, dynamic>? seg) {
+    if (seg == null) return 'STOP';
+    final phase = seg['phase'] as Phase;
+    switch (phase) {
+      case Phase.warmup:
+        return 'WARMUP';
+      case Phase.work:
+        return 'WORK';
+      case Phase.rest:
+        return 'REST';
+      case Phase.cooldown:
+        return 'COOLDOWN';
+    }
+  }
+
+  String _fmt(int s) =>
+      '${(s ~/ 60).toString()}:${(s % 60).toString().padLeft(2, '0')}';
+
+  @override
+  void dispose() {
+    timer?.cancel();
+    _audioPlayer.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final seg =
+        segments.isNotEmpty && idx < segments.length ? segments[idx] : null;
+    final round = seg != null ? (seg['round'] as int) : 0;
+    return Scaffold(
+      body: LayoutBuilder(builder: (context, constraints) {
+        final double totalH = constraints.maxHeight;
+        final double reserved = (totalH * 0.18).clamp(180.0, 320.0);
+        final double avail = (totalH - reserved).clamp(120.0, totalH);
+        final double timeFont = (avail * 0.5).clamp(48.0, 320.0);
+        final double labelFont = (avail * 0.12).clamp(20.0, 64.0);
+        final double roundFont = (avail * 0.08).clamp(16.0, 40.0);
+
+        return Container(
+          color: _bg(seg),
+          width: double.infinity,
+          height: double.infinity,
+          child: SafeArea(
+            child:
+                Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              const SizedBox(height: 8),
+              Text(_label(seg),
+                  style: TextStyle(
+                      fontSize: labelFont,
+                      fontWeight: FontWeight.bold,
+                      color: _textColor(seg))),
+              const SizedBox(height: 12),
+              SizedBox(
+                height: avail * 0.7,
+                child: Center(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(_fmt(remaining),
+                        style: TextStyle(
+                            fontSize: timeFont,
+                            fontWeight: FontWeight.w900,
+                            color: _textColor(seg))),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              if (seg != null && (seg['phase'] as Phase) == Phase.work)
+                Text('Round $round / ${widget.preset.rounds}',
+                    style: TextStyle(
+                        fontSize: roundFont,
+                        fontWeight: FontWeight.bold,
+                        color: _textColor(seg))),
+              const SizedBox(height: 20),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 16,
+                runSpacing: 8,
+                children: [
+                  ElevatedButton(
+                    onPressed: () {
+                      if (running) {
+                        _pause();
+                      } else {
+                        _start();
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 18, horizontal: 24),
+                        textStyle: const TextStyle(
+                            fontSize: 20, fontWeight: FontWeight.bold)),
+                    child: Text(running ? 'Pause' : 'Start'),
+                  ),
+                  ElevatedButton(
+                    onPressed: _stop,
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 18, horizontal: 20),
+                        textStyle: const TextStyle(fontSize: 18)),
+                    child: const Text('Stop'),
+                  ),
+                  ElevatedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 18, horizontal: 20),
+                        textStyle: const TextStyle(fontSize: 18)),
+                    child: const Text('Exit'),
+                  ),
+                ],
+              ),
+            ]),
+          ),
+        );
+      }),
+    );
+  }
+}
+
+// ---------------- BMR Calculator ----------------
+class CalcPage extends StatefulWidget {
+  final SharedPreferences prefs;
+  const CalcPage({Key? key, required this.prefs}) : super(key: key);
+  @override
+  State<CalcPage> createState() => _CalcPageState();
+}
+
+class _CalcPageState extends State<CalcPage> {
+  final _age = TextEditingController();
+  final _height = TextEditingController();
+  final _weight = TextEditingController();
+  String _gender = 'male';
+  double _bmr = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    final s = widget.prefs.getString('bmr_input');
+    if (s != null) {
+      try {
+        final m = jsonDecode(s) as Map<String, dynamic>;
+        _age.text = (m['age'] ?? '').toString();
+        _height.text = (m['height'] ?? '').toString();
+        _weight.text = (m['weight'] ?? '').toString();
+        _gender = (m['gender'] ?? 'male').toString();
+      } catch (_) {}
+    }
+  }
+
+  void _save() {
+    widget.prefs.setString(
+        'bmr_input',
+        jsonEncode({
+          'age': _age.text,
+          'height': _height.text,
+          'weight': _weight.text,
+          'gender': _gender
+        }));
+  }
+
+  void _calc() {
+    final age = int.tryParse(_age.text) ?? 0;
+    final height = double.tryParse(_height.text) ?? 0;
+    final weight = double.tryParse(_weight.text) ?? 0;
+    double bmr;
+    if (_gender == 'male') {
+      bmr = 10 * weight + 6.25 * height - 5 * age + 5;
+    } else {
+      bmr = 10 * weight + 6.25 * height - 5 * age - 161;
+    }
+    setState(() => _bmr = bmr);
+    _save();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(12.0),
+      child: SingleChildScrollView(
+        child: Column(children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Column(children: [
+                Row(children: [
+                  Expanded(
+                      child: ListTile(
+                          title: const Text('Male'),
+                          leading: Radio<String>(
+                              value: 'male',
+                              groupValue: _gender,
+                              onChanged: (v) => setState(() => _gender = v!)))),
+                  Expanded(
+                      child: ListTile(
+                          title: const Text('Female'),
+                          leading: Radio<String>(
+                              value: 'female',
+                              groupValue: _gender,
+                              onChanged: (v) => setState(() => _gender = v!)))),
+                ]),
+                TextField(
+                    controller: _age,
+                    decoration: const InputDecoration(labelText: 'Age (years)'),
+                    keyboardType: TextInputType.number),
+                TextField(
+                    controller: _height,
+                    decoration: const InputDecoration(labelText: 'Height (cm)'),
+                    keyboardType: TextInputType.number),
+                TextField(
+                    controller: _weight,
+                    decoration: const InputDecoration(labelText: 'Weight (kg)'),
+                    keyboardType: TextInputType.number),
+                const SizedBox(height: 12),
+                ElevatedButton(
+                    onPressed: _calc, child: const Text('Calculate BMR')),
+                const SizedBox(height: 8),
+                if (_bmr > 0)
+                  Text('BMR: ${_bmr.toStringAsFixed(0)} kcal/day',
+                      style: const TextStyle(
+                          fontSize: 18, fontWeight: FontWeight.bold)),
+              ]),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+// ---------------- Habits Page ----------------
+class HabitsPage extends StatefulWidget {
+  final SharedPreferences prefs;
+  const HabitsPage({Key? key, required this.prefs}) : super(key: key);
+  @override
+  State<HabitsPage> createState() => _HabitsPageState();
+}
+
+class Habit {
+  String id;
+  String title;
+  List<String> done;
+  Habit({required this.id, required this.title, List<String>? done})
+      : done = done ?? [];
+  Map<String, dynamic> toJson() => {'id': id, 'title': title, 'done': done};
+  static Habit fromJson(Map<String, dynamic> m) => Habit(
+      id: (m['id'] ?? '').toString(),
+      title: (m['title'] ?? '').toString(),
+      done: (m['done'] is List)
+          ? List<String>.from((m['done'] as List).map((e) => e.toString()))
+          : <String>[]);
+}
+
+class _HabitsPageState extends State<HabitsPage> {
+  List<Habit> items = [];
+
+  @override
+  void initState() {
+    super.initState();
+    final s = widget.prefs.getString('habits');
+    if (s != null) {
+      try {
+        final arr = jsonDecode(s) as List;
+        items = arr
+            .map((e) => Habit.fromJson(Map<String, dynamic>.from(e)))
+            .toList();
+      } catch (_) {
+        items = [];
+      }
+    }
+  }
+
+  void _save() {
+    widget.prefs
+        .setString('habits', jsonEncode(items.map((e) => e.toJson()).toList()));
+  }
+
+  String _today() {
+    final d = DateTime.now();
+    return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+  }
+
+  void _toggle(Habit h) {
+    final t = _today();
+    setState(() {
+      if (h.done.contains(t)) {
+        h.done.remove(t);
+      } else {
+        h.done.add(t);
+      }
+    });
+    _save();
+  }
+
+  void _add() async {
+    final title = await showDialog<String>(
+      context: context,
+      builder: (_) {
+        final c = TextEditingController();
+        return AlertDialog(
+          title: const Text('New habit'),
+          content: TextField(
+              controller: c,
+              decoration: const InputDecoration(hintText: 'e.g. Drink water')),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel')),
+            ElevatedButton(
+                onPressed: () => Navigator.pop(context, c.text),
+                child: const Text('Add')),
+          ],
+        );
+      },
+    );
+    if (title != null && title.trim().isNotEmpty) {
+      setState(() => items.add(Habit(
+          id: DateTime.now().millisecondsSinceEpoch.toString(),
+          title: title.trim())));
+      _save();
+    }
+  }
+
+  void _remove(Habit h) {
+    setState(() => items.removeWhere((e) => e.id == h.id));
+    _save();
+  }
+
+  int _streak(Habit h) {
+    int s = 0;
+    DateTime d = DateTime.now();
+    while (true) {
+      final key =
+          '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+      if (h.done.contains(key)) {
+        s++;
+        d = d.subtract(const Duration(days: 1));
+      } else {
+        break;
+      }
+    }
+    return s;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(12.0),
+      child: Column(children: [
+        Row(children: [
+          const Expanded(
+              child: Text('Habits',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
+          IconButton(onPressed: _add, icon: const Icon(Icons.add))
+        ]),
+        const SizedBox(height: 8),
+        Expanded(
+          child: items.isEmpty
+              ? const Center(child: Text('No habits yet'))
+              : ListView.builder(
+                  itemCount: items.length,
+                  itemBuilder: (_, i) {
+                    final h = items[i];
+                    final done = h.done.contains(_today());
+                    return Card(
+                      child: ListTile(
+                        leading: IconButton(
+                            icon: Icon(
+                                done
+                                    ? Icons.check_circle
+                                    : Icons.radio_button_unchecked,
+                                color: done ? Colors.green : null),
+                            onPressed: () => _toggle(h)),
+                        title: Text(h.title),
+                        subtitle: Text(
+                            'Streak: ${_streak(h)} • Total: ${h.done.length}'),
+                        trailing: PopupMenuButton<String>(
+                          onSelected: (v) {
+                            if (v == 'remove') _remove(h);
+                          },
+                          itemBuilder: (_) => const [
+                            PopupMenuItem(
+                                value: 'remove', child: Text('Remove'))
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        )
+      ]),
+    );
+  }
+}
+
+// End of file
