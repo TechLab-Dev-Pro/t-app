@@ -1,0 +1,1852 @@
+// lib/main.dart
+// FamFit — upravené: added TDEE help + renamed bottom nav label to "Calculators"
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/cupertino.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:audioplayers/audioplayers.dart';
+
+// --------------------------- TimerPreset model ---------------------------
+class TimerPreset {
+  String name;
+  int warmup;
+  int work;
+  int rest;
+  int rounds;
+  int cooldown;
+
+  TimerPreset({
+    required this.name,
+    this.warmup = 0,
+    this.work = 20,
+    this.rest = 10,
+    this.rounds = 8,
+    this.cooldown = 0,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'warmup': warmup,
+        'work': work,
+        'rest': rest,
+        'rounds': rounds,
+        'cooldown': cooldown,
+      };
+
+  static TimerPreset fromJson(Map<String, dynamic> m) => TimerPreset(
+        name: (m['name'] ?? 'Preset').toString(),
+        warmup: _toInt(m['warmup'], 0),
+        work: _toInt(m['work'], 20),
+        rest: _toInt(m['rest'], 10),
+        rounds: _toInt(m['rounds'], 8),
+        cooldown: _toInt(m['cooldown'], 0),
+      );
+
+  static int _toInt(dynamic v, int f) {
+    if (v == null) return f;
+    if (v is int) return v;
+    if (v is double) return v.toInt();
+    return int.tryParse(v.toString()) ?? f;
+  }
+
+  String stableKey() => jsonEncode(toJson());
+}
+
+// --------------------------- main ---------------------------
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final prefs = await SharedPreferences.getInstance();
+  runApp(MyApp(prefs: prefs));
+}
+
+class MyApp extends StatefulWidget {
+  final SharedPreferences prefs;
+  const MyApp({Key? key, required this.prefs}) : super(key: key);
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  bool _isDark = false;
+  @override
+  void initState() {
+    super.initState();
+    _isDark = widget.prefs.getBool('isDark') ?? false;
+  }
+
+  void _toggleTheme() {
+    setState(() => _isDark = !_isDark);
+    widget.prefs.setBool('isDark', _isDark);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'FamFit',
+      debugShowCheckedModeBanner: false,
+      theme:
+          ThemeData(primarySwatch: Colors.teal, brightness: Brightness.light),
+      darkTheme:
+          ThemeData(primarySwatch: Colors.teal, brightness: Brightness.dark),
+      themeMode: _isDark ? ThemeMode.dark : ThemeMode.light,
+      home: HomePage(
+          prefs: widget.prefs, onToggleTheme: _toggleTheme, isDark: _isDark),
+    );
+  }
+}
+
+// --------------------------- Home / Navigation ---------------------------
+class HomePage extends StatefulWidget {
+  final SharedPreferences prefs;
+  final VoidCallback onToggleTheme;
+  final bool isDark;
+  const HomePage(
+      {Key? key,
+      required this.prefs,
+      required this.onToggleTheme,
+      required this.isDark})
+      : super(key: key);
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  int _index = 0;
+  late final List<Widget> _pages;
+  @override
+  void initState() {
+    super.initState();
+    _pages = [
+      TimerScreen(prefs: widget.prefs),
+      CalcPage(prefs: widget.prefs),
+      HabitsPage(prefs: widget.prefs)
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('FamFit'),
+        actions: [
+          IconButton(
+              icon: Icon(widget.isDark
+                  ? Icons.wb_sunny_outlined
+                  : Icons.nightlight_round),
+              onPressed: widget.onToggleTheme),
+          IconButton(
+              icon: const Icon(Icons.settings),
+              onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => SettingsPage(prefs: widget.prefs)))),
+        ],
+      ),
+      body: _pages[_index],
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _index,
+        onTap: (i) => setState(() => _index = i),
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.timer), label: 'Timer'),
+          BottomNavigationBarItem(
+              icon: Icon(Icons.calculate), label: 'Calculators'),
+          BottomNavigationBarItem(
+              icon: Icon(Icons.check_circle_outline), label: 'Habits'),
+        ],
+      ),
+    );
+  }
+}
+
+// --------------------------- Settings ---------------------------
+class SettingsPage extends StatefulWidget {
+  final SharedPreferences prefs;
+  const SettingsPage({Key? key, required this.prefs}) : super(key: key);
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  bool notifyLast10Work = false;
+  bool soundOpening = true;
+  bool soundRound = true;
+  @override
+  void initState() {
+    super.initState();
+    notifyLast10Work = widget.prefs.getBool('notify_last10_work') ?? false;
+    soundOpening = widget.prefs.getBool('sound_opening') ?? true;
+    soundRound = widget.prefs.getBool('sound_round') ?? true;
+  }
+
+  void _setNotify(bool v) {
+    setState(() => notifyLast10Work = v);
+    widget.prefs.setBool('notify_last10_work', v);
+  }
+
+  void _setOpening(bool v) {
+    setState(() => soundOpening = v);
+    widget.prefs.setBool('sound_opening', v);
+  }
+
+  void _setRound(bool v) {
+    setState(() => soundRound = v);
+    widget.prefs.setBool('sound_round', v);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Settings')),
+      body: ListView(
+        padding: const EdgeInsets.all(8),
+        children: [
+          SwitchListTile(
+            title: const Text('Notify last 10s of WORK phase'),
+            subtitle: const Text(
+                'Play short knocks at 10s remaining in work intervals'),
+            value: notifyLast10Work,
+            onChanged: _setNotify,
+          ),
+          SwitchListTile(
+            title: const Text('Play opening bell'),
+            subtitle: const Text('Opening bell when session starts'),
+            value: soundOpening,
+            onChanged: _setOpening,
+          ),
+          SwitchListTile(
+            title: const Text('Play round bell'),
+            subtitle: const Text('Bell between rounds / at end of last round'),
+            value: soundRound,
+            onChanged: _setRound,
+          ),
+          const SizedBox(height: 8),
+          const ListTile(
+              title: Text('Note'),
+              subtitle: Text(
+                  'Export / share / QR will be added next if you want sharing features.')),
+        ],
+      ),
+    );
+  }
+}
+
+// --------------------------- Timer Screen ---------------------------
+class TimerScreen extends StatefulWidget {
+  final SharedPreferences prefs;
+  const TimerScreen({Key? key, required this.prefs}) : super(key: key);
+  @override
+  State<TimerScreen> createState() => _TimerScreenState();
+}
+
+class _TimerScreenState extends State<TimerScreen> {
+  static const int SLOTS = 8;
+  late List<TimerPreset?> quickSlots;
+  late TimerPreset current;
+  final Set<int> _recentlySaved = {};
+  late TextEditingController nameC, warmC, workC, restC, roundsC, coolC;
+  late FocusNode nameFocus;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadQuickSlots();
+    _loadLastPreset();
+    _initControllers();
+  }
+
+  String _secToDisplay(int s) =>
+      '${(s ~/ 60)}:${(s % 60).toString().padLeft(2, '0')}';
+
+  int _displayToSec(String t) {
+    if (t.contains(':')) {
+      final parts = t.split(':');
+      final m = int.tryParse(parts[0].trim()) ?? 0;
+      final sec = int.tryParse(parts.length > 1 ? parts[1].trim() : '0') ?? 0;
+      return m * 60 + sec;
+    }
+    return int.tryParse(t) ?? 0;
+  }
+
+  void _initControllers() {
+    nameC = TextEditingController(text: current.name);
+    warmC = TextEditingController(text: _secToDisplay(current.warmup));
+    workC = TextEditingController(text: _secToDisplay(current.work));
+    restC = TextEditingController(text: _secToDisplay(current.rest));
+    roundsC = TextEditingController(text: current.rounds.toString());
+    coolC = TextEditingController(text: _secToDisplay(current.cooldown));
+    nameFocus = FocusNode();
+  }
+
+  void _disposeControllers() {
+    nameC.dispose();
+    warmC.dispose();
+    workC.dispose();
+    restC.dispose();
+    roundsC.dispose();
+    coolC.dispose();
+    nameFocus.dispose();
+  }
+
+  void _loadQuickSlots() {
+    quickSlots = List<TimerPreset?>.filled(SLOTS, null, growable: true);
+    final stored = widget.prefs.getStringList('quick_slots') ?? [];
+    for (int i = 0; i < stored.length && i < SLOTS; i++) {
+      final s = stored[i];
+      if (s.trim().isEmpty) continue;
+      try {
+        quickSlots[i] =
+            TimerPreset.fromJson(jsonDecode(s) as Map<String, dynamic>);
+      } catch (_) {
+        quickSlots[i] = null;
+      }
+    }
+  }
+
+  void _saveQuickSlots() {
+    final list =
+        quickSlots.map((p) => p == null ? '' : jsonEncode(p.toJson())).toList();
+    widget.prefs.setStringList('quick_slots', list);
+  }
+
+  void _loadLastPreset() {
+    final dynamic stored = widget.prefs.get('last_preset');
+    if (stored != null) {
+      try {
+        if (stored is String) {
+          final map = jsonDecode(stored) as Map<String, dynamic>;
+          current = TimerPreset.fromJson(map);
+          return;
+        }
+      } catch (_) {}
+    }
+    current = TimerPreset(
+        name: 'Custom', warmup: 0, work: 20, rest: 10, rounds: 8, cooldown: 0);
+  }
+
+  void _saveLastPreset() =>
+      widget.prefs.setString('last_preset', jsonEncode(current.toJson()));
+
+  void _applySlot(int i) {
+    final p = quickSlots[i];
+    if (p == null) return;
+    setState(() {
+      current = TimerPreset(
+          name: p.name,
+          warmup: p.warmup,
+          work: p.work,
+          rest: p.rest,
+          rounds: p.rounds,
+          cooldown: p.cooldown);
+      _disposeControllers();
+      _initControllers();
+    });
+    _saveLastPreset();
+  }
+
+  void _updateCurrentFromControllers() {
+    setState(() {
+      current.name = nameC.text.trim().isEmpty ? 'Custom' : nameC.text.trim();
+      current.warmup = _displayToSec(warmC.text);
+      current.work = _displayToSec(workC.text);
+      current.rest = _displayToSec(restC.text);
+      current.rounds = int.tryParse(roundsC.text) ?? current.rounds;
+      current.cooldown = _displayToSec(coolC.text);
+    });
+  }
+
+  void _saveToSlot(int i) {
+    _updateCurrentFromControllers();
+    final newPreset = TimerPreset(
+        name: current.name,
+        warmup: current.warmup,
+        work: current.work,
+        rest: current.rest,
+        rounds: current.rounds,
+        cooldown: current.cooldown);
+    final newKey = newPreset.stableKey();
+    for (int j = 0; j < quickSlots.length; j++) {
+      if (j == i) continue;
+      final q = quickSlots[j];
+      if (q != null && q.stableKey() == newKey) quickSlots[j] = null;
+    }
+    setState(() {
+      quickSlots[i] = newPreset;
+      _recentlySaved.add(i);
+    });
+    _saveQuickSlots();
+    Timer(const Duration(milliseconds: 700), () {
+      if (mounted) setState(() => _recentlySaved.remove(i));
+    });
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('Saved to slot')));
+  }
+
+  void _rememberCurrentPreset() {
+    _updateCurrentFromControllers();
+    final key = current.stableKey();
+    int found = -1;
+    for (int i = 0; i < quickSlots.length; i++) {
+      final q = quickSlots[i];
+      if (q != null && q.stableKey() == key) {
+        found = i;
+        break;
+      }
+    }
+    if (found >= 0) return;
+    int emptyIndex = quickSlots.indexWhere((e) => e == null);
+    if (emptyIndex >= 0) {
+      quickSlots[emptyIndex] = TimerPreset(
+          name: current.name,
+          warmup: current.warmup,
+          work: current.work,
+          rest: current.rest,
+          rounds: current.rounds,
+          cooldown: current.cooldown);
+      setState(() {});
+    } else {
+      quickSlots[quickSlots.length - 1] = TimerPreset(
+          name: current.name,
+          warmup: current.warmup,
+          work: current.work,
+          rest: current.rest,
+          rounds: current.rounds,
+          cooldown: current.cooldown);
+      setState(() {});
+    }
+    _saveQuickSlots();
+  }
+
+  void _startSession() {
+    _updateCurrentFromControllers();
+    _saveLastPreset();
+    _rememberCurrentPreset();
+    Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => FullscreenTimer(preset: current, prefs: widget.prefs)));
+  }
+
+  @override
+  void dispose() {
+    _disposeControllers();
+    super.dispose();
+  }
+
+  void _onReorder(int oldIndex, int newIndex) {
+    if (oldIndex == newIndex) return;
+    setState(() {
+      if (newIndex > oldIndex) newIndex--;
+      final item = quickSlots.removeAt(oldIndex);
+      quickSlots.insert(newIndex, item);
+    });
+    _saveQuickSlots();
+  }
+
+  Widget _buildSlot(int i) {
+    final p = quickSlots[i];
+    final brightness = Theme.of(context).brightness;
+    final baseColor = p == null
+        ? (brightness == Brightness.dark ? Colors.grey[800] : Colors.grey[100])
+        : Theme.of(context).cardColor;
+    final flashColor = brightness == Brightness.dark
+        ? Colors.yellow.shade700
+        : Colors.yellowAccent.shade100;
+    final borderColor = p == null ? Colors.grey.shade400 : Colors.teal;
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 260),
+          width: 140,
+          margin: const EdgeInsets.symmetric(horizontal: 0, vertical: 6),
+          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: borderColor, width: 2),
+            color: _recentlySaved.contains(i) ? flashColor : baseColor,
+          ),
+          child: GestureDetector(
+            onTap: p == null ? null : () => _applySlot(i),
+            onLongPress: () async {
+              final ok = await showDialog<bool>(
+                context: context,
+                builder: (_) => AlertDialog(
+                  title: const Text('Save to slot'),
+                  content: Text('Save current preset to slot ${i + 1}?'),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Cancel')),
+                    ElevatedButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('Save')),
+                  ],
+                ),
+              );
+              if (ok == true) {
+                _updateCurrentFromControllers();
+                _saveToSlot(i);
+              }
+            },
+            child:
+                Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              if (p == null) ...[
+                const Icon(Icons.add, color: Colors.black26, size: 30),
+                const SizedBox(height: 6),
+                Text('Empty',
+                    style: TextStyle(
+                        fontSize: 14, color: Theme.of(context).hintColor)),
+              ] else ...[
+                Text(
+                    p.name.length > 22
+                        ? '${p.name.substring(0, 22)}...'
+                        : p.name,
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: brightness == Brightness.dark
+                            ? Colors.white
+                            : Colors.black),
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 6),
+                Text(
+                    '${(p.work ~/ 60)}:${(p.work % 60).toString().padLeft(2, '0')} / ${(p.rest ~/ 60)}:${(p.rest % 60).toString().padLeft(2, '0')}  x${p.rounds}',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: brightness == Brightness.dark
+                            ? Colors.white70
+                            : Colors.black87),
+                    textAlign: TextAlign.center),
+              ]
+            ]),
+          ),
+        ),
+        Positioned(
+          top: -6,
+          right: -6,
+          child: ReorderableDragStartListener(
+            index: i,
+            child: Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                  color: Colors.grey.shade200,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade400),
+                  boxShadow: const [
+                    BoxShadow(
+                        color: Colors.black12,
+                        blurRadius: 2,
+                        offset: Offset(0, 1))
+                  ]),
+              child: const Icon(Icons.drag_handle, size: 18),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _numberField(String label, TextEditingController c,
+      {bool isLarge = false}) {
+    final labelStyle =
+        const TextStyle(fontSize: 14, fontWeight: FontWeight.w600);
+    final valueStyle =
+        const TextStyle(fontSize: 18, fontWeight: FontWeight.bold);
+    return GestureDetector(
+      onTap: () async {
+        if (label == 'Round' || label == 'Round') {
+          final initial = int.tryParse(c.text) ?? 8;
+          await _showNumberPicker(label, c, 1, 100, initial);
+        } else {
+          final tot = _displayToSec(c.text);
+          await _showMinutesSecondsPicker(label, c, tot);
+        }
+      },
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(label, style: labelStyle),
+        const SizedBox(height: 6),
+        Container(
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
+          decoration: BoxDecoration(
+              color: Theme.of(context).cardColor,
+              borderRadius: BorderRadius.circular(8)),
+          child: Align(
+              alignment: Alignment.centerLeft,
+              child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(c.text, style: valueStyle))),
+        ),
+      ]),
+    );
+  }
+
+  Future<void> _showNumberPicker(String label, TextEditingController c, int min,
+      int max, int initial) async {
+    int selected = (initial).clamp(min, max);
+    await showModalBottomSheet(
+        context: context,
+        builder: (ctx) {
+          return SizedBox(
+              height: 360,
+              child: Column(children: [
+                Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12.0, vertical: 8.0),
+                    child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(label,
+                              style: const TextStyle(
+                                  fontSize: 20, fontWeight: FontWeight.bold)),
+                          TextButton(
+                              onPressed: () {
+                                c.text = selected.toString();
+                                Navigator.of(ctx).pop();
+                              },
+                              child: const Text('OK'))
+                        ])),
+                const Divider(height: 1),
+                Expanded(
+                    child: CupertinoPicker(
+                        scrollController: FixedExtentScrollController(
+                            initialItem: (selected - min).clamp(0, max - min)),
+                        itemExtent: 40,
+                        onSelectedItemChanged: (i) =>
+                            selected = (min + i).clamp(min, max),
+                        children: List<Widget>.generate(max - min + 1, (i) {
+                          final val = min + i;
+                          return Center(
+                              child: Text(val.toString(),
+                                  style: const TextStyle(
+                                      fontSize: 22,
+                                      fontWeight: FontWeight.w600)));
+                        }))),
+              ]));
+        },
+        isScrollControlled: false);
+    FocusScope.of(context).unfocus();
+    setState(() {});
+  }
+
+  Future<void> _showMinutesSecondsPicker(
+      String label, TextEditingController c, int totalSeconds) async {
+    int initialMinutes = (totalSeconds ~/ 60).clamp(0, 600);
+    int initialSeconds = (totalSeconds % 60).clamp(0, 59);
+    int selMin = initialMinutes;
+    int selSec = initialSeconds;
+    await showModalBottomSheet(
+        context: context,
+        builder: (ctx) {
+          return SizedBox(
+              height: 420,
+              child: Column(children: [
+                Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12.0, vertical: 8.0),
+                    child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(label,
+                              style: const TextStyle(
+                                  fontSize: 20, fontWeight: FontWeight.bold)),
+                          TextButton(
+                              onPressed: () {
+                                final total = selMin * 60 + selSec;
+                                c.text = _secToDisplay(total);
+                                Navigator.of(ctx).pop();
+                              },
+                              child: const Text('OK'))
+                        ])),
+                const Divider(height: 1),
+                Expanded(
+                    child: Row(children: [
+                  Expanded(
+                      child: CupertinoPicker(
+                          scrollController:
+                              FixedExtentScrollController(initialItem: selMin),
+                          itemExtent: 40,
+                          onSelectedItemChanged: (i) =>
+                              selMin = i.clamp(0, 600),
+                          children: List<Widget>.generate(
+                              601,
+                              (i) => Center(
+                                  child: Text('${i} min',
+                                      style: const TextStyle(fontSize: 20)))))),
+                  Expanded(
+                      child: CupertinoPicker(
+                          scrollController:
+                              FixedExtentScrollController(initialItem: selSec),
+                          itemExtent: 40,
+                          onSelectedItemChanged: (i) => selSec = i.clamp(0, 59),
+                          children: List<Widget>.generate(
+                              60,
+                              (i) => Center(
+                                  child: Text('${i} s',
+                                      style: const TextStyle(fontSize: 22)))))),
+                ])),
+                const SizedBox(height: 8),
+              ]));
+        },
+        isScrollControlled: false);
+
+    FocusScope.of(context).unfocus();
+    setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      child: Padding(
+          padding: const EdgeInsets.all(14.0),
+          child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  height: 140,
+                  child: ReorderableListView(
+                    scrollDirection: Axis.horizontal,
+                    buildDefaultDragHandles: false,
+                    onReorder: _onReorder,
+                    children: List.generate(SLOTS, (i) {
+                      final keyString =
+                          'slot-$i-${quickSlots[i]?.stableKey() ?? 'empty'}';
+                      return Padding(
+                          key: ValueKey(keyString),
+                          padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                          child: _buildSlot(i));
+                    }),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Card(
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                    elevation: 4,
+                    child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Column(children: [
+                          TextField(
+                              controller: nameC,
+                              focusNode: nameFocus,
+                              onEditingComplete: () {
+                                try {
+                                  nameFocus.unfocus();
+                                } catch (_) {}
+                                SystemChannels.textInput
+                                    .invokeMethod('TextInput.hide');
+                                nameC.selection = TextSelection.collapsed(
+                                    offset: nameC.text.length);
+                                setState(() {});
+                              },
+                              onSubmitted: (_) {
+                                try {
+                                  nameFocus.unfocus();
+                                } catch (_) {}
+                                SystemChannels.textInput
+                                    .invokeMethod('TextInput.hide');
+                                nameC.selection = TextSelection.collapsed(
+                                    offset: nameC.text.length);
+                                setState(() {});
+                              },
+                              style: const TextStyle(
+                                  fontSize: 20, fontWeight: FontWeight.w700),
+                              decoration: const InputDecoration(
+                                  labelText: 'Preset name (optional)',
+                                  labelStyle: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600))),
+                          const SizedBox(height: 12),
+                          Row(children: [
+                            Expanded(child: _numberField('Warmup', warmC)),
+                            const SizedBox(width: 10),
+                            Expanded(child: _numberField('Cooldown', coolC))
+                          ]),
+                          const SizedBox(height: 12),
+                          Row(children: [
+                            Expanded(
+                                flex: 3, child: _numberField('Work', workC)),
+                            const SizedBox(width: 10),
+                            Expanded(
+                                flex: 3, child: _numberField('Rest', restC)),
+                            const SizedBox(width: 10),
+                            Expanded(
+                                flex: 2, child: _numberField('Round', roundsC))
+                          ]),
+                          const SizedBox(height: 12),
+                          const Text(
+                              'Tap slot to load • Long press to save • Drag handle to reorder',
+                              style: TextStyle(fontSize: 16)),
+                        ]))),
+                const SizedBox(height: 18),
+                Row(children: [
+                  Expanded(
+                      child: Center(
+                          child: ElevatedButton(
+                              style: ElevatedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(
+                                      vertical: 24, horizontal: 48),
+                                  textStyle: const TextStyle(
+                                      fontSize: 28,
+                                      fontWeight: FontWeight.bold)),
+                              onPressed: _startSession,
+                              child: const Text('START'))))
+                ]),
+                const SizedBox(height: 18),
+              ])),
+    );
+  }
+}
+
+// --------------------------- Fullscreen Timer ---------------------------
+class FullscreenTimer extends StatefulWidget {
+  final TimerPreset preset;
+  final SharedPreferences prefs;
+  const FullscreenTimer({Key? key, required this.preset, required this.prefs})
+      : super(key: key);
+  @override
+  State<FullscreenTimer> createState() => _FullscreenTimerState();
+}
+
+enum Phase { warmup, work, rest, cooldown }
+
+class _FullscreenTimerState extends State<FullscreenTimer> {
+  late List<Map<String, dynamic>> segments;
+  int idx = 0;
+  int remaining = 0;
+  Timer? timer;
+  bool running = false;
+  bool _notifiedForSegment = false;
+  late bool notifyLast10;
+  late bool playOpening;
+  late bool playRound;
+  final AudioPlayer _audioPlayer = AudioPlayer();
+
+  @override
+  void initState() {
+    super.initState();
+    _buildSegments();
+    remaining = segments.isNotEmpty ? segments[0]['seconds'] as int : 0;
+    notifyLast10 = widget.prefs.getBool('notify_last10_work') ?? false;
+    playOpening = widget.prefs.getBool('sound_opening') ?? true;
+    playRound = widget.prefs.getBool('sound_round') ?? true;
+  }
+
+  Future<void> _playAsset(String filename) async {
+    try {
+      await _audioPlayer.play(AssetSource('assets/sounds/$filename'));
+      return;
+    } catch (_) {}
+    try {
+      final assetPath = 'assets/sounds/$filename';
+      final bd = await rootBundle.load(assetPath);
+      final bytes = bd.buffer.asUint8List();
+      await _audioPlayer.play(BytesSource(bytes));
+      return;
+    } catch (_) {}
+    try {
+      for (int i = 0; i < 3; i++) {
+        SystemSound.play(SystemSoundType.click);
+        await Future.delayed(const Duration(milliseconds: 160));
+      }
+      return;
+    } catch (_) {}
+  }
+
+  void _buildSegments() {
+    segments = [];
+    if (widget.preset.warmup > 0)
+      segments.add(
+          {'phase': Phase.warmup, 'seconds': widget.preset.warmup, 'round': 0});
+    for (int r = 1; r <= widget.preset.rounds; r++) {
+      segments.add(
+          {'phase': Phase.work, 'seconds': widget.preset.work, 'round': r});
+      if (r < widget.preset.rounds)
+        segments.add(
+            {'phase': Phase.rest, 'seconds': widget.preset.rest, 'round': r});
+    }
+    if (widget.preset.cooldown > 0)
+      segments.add({
+        'phase': Phase.cooldown,
+        'seconds': widget.preset.cooldown,
+        'round': 0
+      });
+  }
+
+  void _tick() {
+    if (remaining > 0) {
+      setState(() => remaining--);
+      _checkNotify();
+    } else
+      _next();
+  }
+
+  void _checkNotify() {
+    if (!notifyLast10) return;
+    if (segments.isEmpty || idx >= segments.length) return;
+    final seg = segments[idx];
+    if (seg['phase'] == Phase.work) {
+      if (!_notifiedForSegment && remaining == 10) {
+        _notifiedForSegment = true;
+        _playAsset('10seconds_knocks.mp3');
+      }
+    }
+  }
+
+  Future<void> _start() async {
+    if (running) return;
+    if (idx == 0 &&
+        remaining ==
+            (segments.isNotEmpty ? segments[0]['seconds'] as int : 0)) {
+      if (playOpening) await _playAsset('opening_bell.mp3');
+    }
+    running = true;
+    timer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+    setState(() {});
+  }
+
+  void _pause() {
+    timer?.cancel();
+    timer = null;
+    running = false;
+    setState(() {});
+  }
+
+  void _stop() {
+    timer?.cancel();
+    timer = null;
+    running = false;
+    idx = 0;
+    _notifiedForSegment = false;
+    remaining = segments.isNotEmpty ? segments[0]['seconds'] as int : 0;
+    setState(() {});
+  }
+
+  Future<void> _next() async {
+    if (idx >= segments.length - 1) {
+      if (playRound) await _playAsset('boxing_bell_last_round.mp3');
+      await _finish();
+      return;
+    }
+    if (playRound) await _playAsset('round_bell_two_chimes.mp3');
+    try {
+      HapticFeedback.mediumImpact();
+      SystemSound.play(SystemSoundType.click);
+    } catch (_) {}
+    idx++;
+    _notifiedForSegment = false;
+    remaining = segments[idx]['seconds'] as int;
+    setState(() {});
+  }
+
+  Future<void> _finish() async {
+    timer?.cancel();
+    timer = null;
+    running = false;
+    try {
+      HapticFeedback.heavyImpact();
+      SystemSound.play(SystemSoundType.click);
+    } catch (_) {}
+    if (!mounted) return;
+    await showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+                title: const Text('Done'),
+                content: const Text('Session complete'),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('OK'))
+                ]));
+    if (mounted) Navigator.pop(context);
+  }
+
+  Color _bg(Map<String, dynamic>? seg) {
+    if (seg == null) return Colors.black;
+    final phase = seg['phase'] as Phase;
+    switch (phase) {
+      case Phase.warmup:
+        return Colors.blue.shade700;
+      case Phase.work:
+        return Colors.red.shade700;
+      case Phase.rest:
+        return Colors.orange.shade700;
+      case Phase.cooldown:
+        return Colors.purple.shade700;
+    }
+  }
+
+  Color _textColor(Map<String, dynamic>? seg) => Colors.white;
+  String _label(Map<String, dynamic>? seg) {
+    if (seg == null) return 'STOP';
+    final phase = seg['phase'] as Phase;
+    switch (phase) {
+      case Phase.warmup:
+        return 'WARMUP';
+      case Phase.work:
+        return 'WORK';
+      case Phase.rest:
+        return 'REST';
+      case Phase.cooldown:
+        return 'COOLDOWN';
+    }
+  }
+
+  String _fmt(int s) =>
+      '${(s ~/ 60).toString()}:${(s % 60).toString().padLeft(2, '0')}';
+  @override
+  void dispose() {
+    timer?.cancel();
+    _audioPlayer.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final seg =
+        segments.isNotEmpty && idx < segments.length ? segments[idx] : null;
+    final round = seg != null ? (seg['round'] as int) : 0;
+    return Scaffold(
+      body: LayoutBuilder(builder: (context, constraints) {
+        final double totalH = constraints.maxHeight;
+        final double reserved = (totalH * 0.18).clamp(180.0, 320.0);
+        final double avail = (totalH - reserved).clamp(120.0, totalH);
+        final double timeFont = (avail * 0.5).clamp(48.0, 320.0);
+        final double labelFont = (avail * 0.12).clamp(20.0, 64.0);
+        final double roundFont = (avail * 0.08).clamp(16.0, 40.0);
+        return Container(
+          color: _bg(seg),
+          width: double.infinity,
+          height: double.infinity,
+          child: SafeArea(
+              child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                const SizedBox(height: 8),
+                Text(_label(seg),
+                    style: TextStyle(
+                        fontSize: labelFont,
+                        fontWeight: FontWeight.bold,
+                        color: _textColor(seg))),
+                const SizedBox(height: 12),
+                SizedBox(
+                    height: avail * 0.7,
+                    child: Center(
+                        child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(_fmt(remaining),
+                                style: TextStyle(
+                                    fontSize: timeFont,
+                                    fontWeight: FontWeight.w900,
+                                    color: _textColor(seg)))))),
+                const SizedBox(height: 8),
+                if (seg != null &&
+                    ((seg['phase'] as Phase) == Phase.work ||
+                        (seg['phase'] as Phase) == Phase.rest))
+                  Text('Round $round / ${widget.preset.rounds}',
+                      style: TextStyle(
+                          fontSize: roundFont,
+                          fontWeight: FontWeight.bold,
+                          color: _textColor(seg))),
+                const SizedBox(height: 20),
+                Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 16,
+                    runSpacing: 8,
+                    children: [
+                      ElevatedButton(
+                          onPressed: () {
+                            if (running)
+                              _pause();
+                            else
+                              _start();
+                          },
+                          style: ElevatedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(
+                                  vertical: 18, horizontal: 24),
+                              textStyle: const TextStyle(
+                                  fontSize: 20, fontWeight: FontWeight.bold)),
+                          child: Text(running ? 'Pause' : 'Start')),
+                      ElevatedButton(
+                          onPressed: _stop,
+                          style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.black,
+                              padding: const EdgeInsets.symmetric(
+                                  vertical: 18, horizontal: 20),
+                              textStyle: const TextStyle(fontSize: 18)),
+                          child: const Text('Stop')),
+                      ElevatedButton(
+                          onPressed: () => Navigator.pop(context),
+                          style: ElevatedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(
+                                  vertical: 18, horizontal: 20),
+                              textStyle: const TextStyle(fontSize: 18)),
+                          child: const Text('Exit')),
+                    ]),
+              ])),
+        );
+      }),
+    );
+  }
+}
+
+// --------------------------- Calc page with tabs ---------------------------
+class CalcPage extends StatefulWidget {
+  final SharedPreferences prefs;
+  const CalcPage({Key? key, required this.prefs}) : super(key: key);
+  @override
+  State<CalcPage> createState() => _CalcPageState();
+}
+
+class _CalcPageState extends State<CalcPage>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+
+  // BMR inputs
+  final _age = TextEditingController();
+  final _height = TextEditingController();
+  final _weight = TextEditingController();
+  String _gender = 'male';
+  double _bmr = 0;
+
+  // TDEE state
+  double _tdee = 0;
+  double _activityFactor = 1.375;
+  final Map<String, double> activityFactors = {
+    'Sedentary (little/no exercise)': 1.2,
+    'Light (1-3x/week)': 1.375,
+    'Moderate (3-5x/week)': 1.55,
+    'Active (6-7x/week)': 1.725,
+    'Very active (hard daily)': 1.9,
+  };
+
+  // Macros
+  final _calTargetController = TextEditingController();
+  String _macroGoal = 'maintain';
+  double _proteinPerKg = 1.8;
+  double _fatPercent = 25;
+  Map<String, double> _macroResults = {};
+
+  // HIIT generator inputs
+  String _hiitGoal = 'fat_loss';
+  String _hiitIntensity = 'medium';
+  final _hiitTotalMin = TextEditingController();
+  final _hiitRounds = TextEditingController();
+  TimerPreset? _generatedPreset;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 4, vsync: this);
+    final s = widget.prefs.getString('bmr_input');
+    if (s != null) {
+      try {
+        final m = jsonDecode(s) as Map<String, dynamic>;
+        _age.text = (m['age'] ?? '').toString();
+        _height.text = (m['height'] ?? '').toString();
+        _weight.text = (m['weight'] ?? '').toString();
+        _gender = (m['gender'] ?? 'male').toString();
+      } catch (_) {}
+    }
+  }
+
+  void _saveBmrInputs() {
+    widget.prefs.setString(
+        'bmr_input',
+        jsonEncode({
+          'age': _age.text,
+          'height': _height.text,
+          'weight': _weight.text,
+          'gender': _gender
+        }));
+  }
+
+  void _calcBMR() {
+    final age = int.tryParse(_age.text) ?? 0;
+    final height = double.tryParse(_height.text) ?? 0;
+    final weight = double.tryParse(_weight.text) ?? 0;
+    if (age <= 0 || height <= 0 || weight <= 0) {
+      setState(() => _bmr = 0);
+      return;
+    }
+    double bmr;
+    if (_gender == 'male')
+      bmr = 10 * weight + 6.25 * height - 5 * age + 5;
+    else
+      bmr = 10 * weight + 6.25 * height - 5 * age - 161;
+    setState(() {
+      _bmr = bmr;
+      _calTargetController.text = _tdee > 0 ? _tdee.toStringAsFixed(0) : '';
+    });
+    _saveBmrInputs();
+  }
+
+  void _calcTDEE() {
+    if (_bmr <= 0) {
+      _tdee = 0;
+      return;
+    }
+    setState(() => _tdee = _bmr * _activityFactor);
+  }
+
+  void _calcMacros() {
+    final weight = double.tryParse(_weight.text) ?? 0;
+    final targetCalories =
+        double.tryParse(_calTargetController.text) ?? (_tdee > 0 ? _tdee : 0);
+    if (weight <= 0 || targetCalories <= 0) {
+      _macroResults = {};
+      setState(() {});
+      return;
+    }
+
+    double ppk;
+    if (_macroGoal == 'lose')
+      ppk = 2.0;
+    else if (_macroGoal == 'gain')
+      ppk = 1.6;
+    else
+      ppk = 1.8;
+
+    final proteinGrams = (ppk * weight);
+    final proteinCals = proteinGrams * 4;
+
+    final fatCals = targetCalories * (_fatPercent / 100.0);
+    final fatGrams = fatCals / 9.0;
+
+    final carbCals =
+        (targetCalories - proteinCals - fatCals).clamp(0.0, double.infinity);
+    final carbGrams = carbCals / 4.0;
+
+    setState(() {
+      _macroResults = {
+        'calories': targetCalories,
+        'protein_g': proteinGrams,
+        'fat_g': fatGrams,
+        'carb_g': carbGrams,
+        'protein_cals': proteinCals,
+        'fat_cals': fatCals,
+        'carb_cals': carbCals,
+      };
+    });
+  }
+
+  void _generateHIIT() {
+    final totalMin = int.tryParse(_hiitTotalMin.text) ?? 0;
+    final rounds = int.tryParse(_hiitRounds.text) ?? 0;
+    int work = 30, rest = 15, warm = 60, cool = 60;
+    if (_hiitIntensity == 'low') {
+      work = 20;
+      rest = 20;
+    }
+    if (_hiitIntensity == 'medium') {
+      work = 30;
+      rest = 15;
+    }
+    if (_hiitIntensity == 'high') {
+      work = 40;
+      rest = 20;
+    }
+    int useRounds = rounds;
+    if (useRounds <= 0 && totalMin > 0) {
+      final usableSec = totalMin * 60 - warm - cool;
+      final cycle = work + rest;
+      if (usableSec > 0)
+        useRounds = (usableSec / cycle).floor().clamp(1, 100);
+      else
+        useRounds = 1;
+    }
+    if (useRounds <= 0) useRounds = 8;
+    final preset = TimerPreset(
+      name: 'HIIT ${_hiitGoal.replaceAll('_', ' ')} ${_hiitIntensity}',
+      warmup: warm,
+      work: work,
+      rest: rest,
+      rounds: useRounds,
+      cooldown: cool,
+    );
+    setState(() => _generatedPreset = preset);
+  }
+
+  Future<void> _savePresetToSlots(TimerPreset p) async {
+    final prefs = widget.prefs;
+    final list =
+        prefs.getStringList('quick_slots') ?? List<String>.filled(8, '');
+    final key = p.stableKey();
+    for (int i = 0; i < list.length; i++) {
+      final s = list[i];
+      if (s.isNotEmpty) {
+        try {
+          final m = jsonDecode(s) as Map<String, dynamic>;
+          if (TimerPreset.fromJson(m).stableKey() == key) {
+            ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Preset already saved in slots')));
+            return;
+          }
+        } catch (_) {}
+      }
+    }
+    int idx = list.indexWhere((s) => s.isEmpty);
+    if (idx == -1) idx = list.length - 1;
+    if (idx < 0) idx = 0;
+    list[idx] = jsonEncode(p.toJson());
+    await prefs.setStringList('quick_slots', list);
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('Preset saved to slots')));
+  }
+
+  Future<void> _copyPresetJson(TimerPreset p) async {
+    final jsonStr = jsonEncode(p.toJson());
+    await Clipboard.setData(ClipboardData(text: jsonStr));
+    ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Preset JSON copied to clipboard')));
+  }
+
+  String _bmrHelpShort() {
+    return 'BMR (Basal Metabolic Rate): estimated calories your body needs at rest. We use Mifflin–St Jeor formula. Use BMR × activity factor to get TDEE.';
+  }
+
+  String _tdeeHelpShort() {
+    return 'TDEE (Total Daily Energy Expenditure) is an estimate of how many calories you burn per day, including activity. Multiply your BMR by an activity factor (e.g. 1.2 for sedentary, 1.55 for moderate) to get TDEE — useful for setting calorie targets.';
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    _age.dispose();
+    _height.dispose();
+    _weight.dispose();
+    _calTargetController.dispose();
+    _hiitTotalMin.dispose();
+    _hiitRounds.dispose();
+    super.dispose();
+  }
+
+  Widget _buildBmrTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(10),
+      child: Column(children: [
+        Card(
+            child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(children: [
+                  Row(children: [
+                    Expanded(
+                        child: ListTile(
+                            title: const Text('Male'),
+                            leading: Radio<String>(
+                                value: 'male',
+                                groupValue: _gender,
+                                onChanged: (v) =>
+                                    setState(() => _gender = v!)))),
+                    Expanded(
+                        child: ListTile(
+                            title: const Text('Female'),
+                            leading: Radio<String>(
+                                value: 'female',
+                                groupValue: _gender,
+                                onChanged: (v) =>
+                                    setState(() => _gender = v!)))),
+                  ]),
+                  Row(children: [
+                    Expanded(
+                        child: TextField(
+                            controller: _age,
+                            decoration: const InputDecoration(
+                                labelText: 'Age', hintText: 'years'),
+                            keyboardType: TextInputType.number)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                        child: TextField(
+                            controller: _height,
+                            decoration: const InputDecoration(
+                                labelText: 'Height', hintText: 'cm'),
+                            keyboardType: TextInputType.number)),
+                  ]),
+                  const SizedBox(height: 8),
+                  Row(children: [
+                    Expanded(
+                        child: TextField(
+                            controller: _weight,
+                            decoration: const InputDecoration(
+                                labelText: 'Weight', hintText: 'kg'),
+                            keyboardType: TextInputType.number)),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                        onPressed: _calcBMR, child: const Text('Calc BMR')),
+                  ]),
+                  const SizedBox(height: 10),
+                  if (_bmr > 0)
+                    Text('BMR: ${_bmr.toStringAsFixed(0)} kcal/day',
+                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 4),
+                  const Divider(),
+                  // tu je len ikona otaznik -> po ťuknutí dialóg s popisom
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: IconButton(
+                      icon: const Icon(Icons.help_outline),
+                      tooltip: 'What is BMR?',
+                      onPressed: () {
+                        showDialog(
+                            context: context,
+                            builder: (_) => AlertDialog(
+                                  title: const Text('What is BMR?'),
+                                  content: Text(_bmrHelpShort()),
+                                  actions: [
+                                    TextButton(
+                                        onPressed: () => Navigator.pop(context),
+                                        child: const Text('Close'))
+                                  ],
+                                ));
+                      },
+                    ),
+                  ),
+                ]))),
+      ]),
+    );
+  }
+
+  Widget _buildTdeeTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(10),
+      child: Column(children: [
+        Card(
+            child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(children: [
+                  const Text('TDEE = BMR × activity factor',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  if (_bmr > 0)
+                    Text('Current BMR: ${_bmr.toStringAsFixed(0)} kcal/day'),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<double>(
+                    value: _activityFactor,
+                    items: activityFactors.entries
+                        .map((e) => DropdownMenuItem(
+                            value: e.value,
+                            child: Text(
+                                '${e.key} — ×${e.value.toStringAsFixed(2)}')))
+                        .toList(),
+                    onChanged: (v) {
+                      setState(() => _activityFactor = v ?? 1.375);
+                      _calcTDEE();
+                    },
+                    decoration:
+                        const InputDecoration(labelText: 'Activity level'),
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    ElevatedButton(
+                        onPressed: _calcTDEE,
+                        child: const Text('Calculate TDEE')),
+                  ]),
+                  const SizedBox(height: 12),
+                  if (_tdee > 0)
+                    Text('TDEE estimate: ${_tdee.toStringAsFixed(0)} kcal/day',
+                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                  // help icon for TDEE (english)
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: IconButton(
+                      icon: const Icon(Icons.help_outline),
+                      tooltip: 'What is TDEE?',
+                      onPressed: () {
+                        showDialog(
+                            context: context,
+                            builder: (_) => AlertDialog(
+                                  title: const Text('What is TDEE?'),
+                                  content: Text(_tdeeHelpShort()),
+                                  actions: [
+                                    TextButton(
+                                        onPressed: () => Navigator.pop(context),
+                                        child: const Text('Close'))
+                                  ],
+                                ));
+                      },
+                    ),
+                  ),
+                ]))),
+      ]),
+    );
+  }
+
+  Widget _buildMacrosTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(10),
+      child: Column(children: [
+        Card(
+            child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(children: [
+                  const Text('Macro calculator — basic suggestions',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    SizedBox(
+                        width: 260,
+                        child: DropdownButtonFormField<String>(
+                            value: _macroGoal,
+                            items: const [
+                              DropdownMenuItem(
+                                  value: 'maintain', child: Text('Maintain')),
+                              DropdownMenuItem(
+                                  value: 'lose', child: Text('Lose weight')),
+                              DropdownMenuItem(
+                                  value: 'gain', child: Text('Gain weight')),
+                            ],
+                            onChanged: (v) =>
+                                setState(() => _macroGoal = v ?? 'maintain'),
+                            decoration:
+                                const InputDecoration(labelText: 'Goal'))),
+                    SizedBox(
+                        width: 160,
+                        child: TextField(
+                            controller: _calTargetController,
+                            decoration: const InputDecoration(
+                                labelText: 'Calories (or leave for TDEE)'),
+                            keyboardType: TextInputType.number)),
+                  ]),
+                  const SizedBox(height: 8),
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    SizedBox(
+                        width: 160,
+                        child: TextFormField(
+                            initialValue: _proteinPerKg.toStringAsFixed(1),
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(
+                                labelText: 'Protein (g/kg)'),
+                            onChanged: (v) {
+                              _proteinPerKg =
+                                  double.tryParse(v) ?? _proteinPerKg;
+                            })),
+                    SizedBox(
+                        width: 160,
+                        child: TextFormField(
+                            initialValue: _fatPercent.toStringAsFixed(0),
+                            keyboardType: TextInputType.number,
+                            decoration:
+                                const InputDecoration(labelText: 'Fat %'),
+                            onChanged: (v) {
+                              _fatPercent = double.tryParse(v) ?? _fatPercent;
+                            })),
+                  ]),
+                  const SizedBox(height: 8),
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    ElevatedButton(
+                        onPressed: () {
+                          if (_tdee > 0)
+                            _calTargetController.text =
+                                _tdee.toStringAsFixed(0);
+                          else if (_bmr > 0)
+                            _calTargetController.text =
+                                (_bmr * 1.4).toStringAsFixed(0);
+                          _calcMacros();
+                        },
+                        child: const Text('Use TDEE / estimate')),
+                    ElevatedButton(
+                        onPressed: _calcMacros,
+                        child: const Text('Calculate Macros')),
+                  ]),
+                  const SizedBox(height: 12),
+                  if (_macroResults.isNotEmpty) ...[
+                    Text(
+                        'Calories: ${_macroResults['calories']!.toStringAsFixed(0)} kcal',
+                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 6),
+                    Text(
+                        'Protein: ${_macroResults['protein_g']!.toStringAsFixed(0)} g (${_macroResults['protein_cals']!.toStringAsFixed(0)} kcal)'),
+                    Text(
+                        'Fat: ${_macroResults['fat_g']!.toStringAsFixed(0)} g (${_macroResults['fat_cals']!.toStringAsFixed(0)} kcal)'),
+                    Text(
+                        'Carbs: ${_macroResults['carb_g']!.toStringAsFixed(0)} g (${_macroResults['carb_cals']!.toStringAsFixed(0)} kcal)'),
+                  ],
+                ]))),
+      ]),
+    );
+  }
+
+  Widget _buildHiitTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(10),
+      child: Column(children: [
+        Card(
+            child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(children: [
+                  const Text('HIIT program generator',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    SizedBox(
+                        width: 200,
+                        child: DropdownButtonFormField<String>(
+                            value: _hiitGoal,
+                            items: const [
+                              DropdownMenuItem(
+                                  value: 'fat_loss', child: Text('Fat loss')),
+                              DropdownMenuItem(
+                                  value: 'endurance', child: Text('Endurance')),
+                              DropdownMenuItem(
+                                  value: 'power',
+                                  child: Text('Power / Strength')),
+                            ],
+                            onChanged: (v) =>
+                                setState(() => _hiitGoal = v ?? 'fat_loss'),
+                            decoration:
+                                const InputDecoration(labelText: 'Goal'))),
+                    SizedBox(
+                        width: 160,
+                        child: DropdownButtonFormField<String>(
+                            value: _hiitIntensity,
+                            items: const [
+                              DropdownMenuItem(
+                                  value: 'low', child: Text('Low')),
+                              DropdownMenuItem(
+                                  value: 'medium', child: Text('Medium')),
+                              DropdownMenuItem(
+                                  value: 'high', child: Text('High')),
+                            ],
+                            onChanged: (v) =>
+                                setState(() => _hiitIntensity = v ?? 'medium'),
+                            decoration:
+                                const InputDecoration(labelText: 'Intensity'))),
+                  ]),
+                  const SizedBox(height: 8),
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    SizedBox(
+                        width: 160,
+                        child: TextField(
+                            controller: _hiitTotalMin,
+                            decoration: const InputDecoration(
+                                labelText: 'Total time (min) — optional'),
+                            keyboardType: TextInputType.number)),
+                    SizedBox(
+                        width: 160,
+                        child: TextField(
+                            controller: _hiitRounds,
+                            decoration: const InputDecoration(
+                                labelText: 'Rounds — optional'),
+                            keyboardType: TextInputType.number)),
+                  ]),
+                  const SizedBox(height: 8),
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    ElevatedButton(
+                        onPressed: _generateHIIT,
+                        child: const Text('Generate preset')),
+                    ElevatedButton(
+                        onPressed: () {
+                          if (_generatedPreset == null) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                    content: Text('Generate preset first')));
+                            return;
+                          }
+                          _copyPresetJson(_generatedPreset!);
+                        },
+                        child: const Text('Copy JSON')),
+                    ElevatedButton(
+                        onPressed: () async {
+                          if (_generatedPreset == null) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                    content: Text('Generate preset first')));
+                            return;
+                          }
+                          await _savePresetToSlots(_generatedPreset!);
+                        },
+                        child: const Text('Save to slots')),
+                  ]),
+                  const SizedBox(height: 12),
+                  if (_generatedPreset != null)
+                    Column(children: [
+                      Text('Preset: ${_generatedPreset!.name}',
+                          style: const TextStyle(fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 6),
+                      Text(
+                          'Warmup: ${_generatedPreset!.warmup}s • Work: ${_generatedPreset!.work}s • Rest: ${_generatedPreset!.rest}s • Rounds: ${_generatedPreset!.rounds} • Cooldown: ${_generatedPreset!.cooldown}s'),
+                      const SizedBox(height: 6),
+                    ])
+                ]))),
+      ]),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(children: [
+      TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(text: 'BMR'),
+            Tab(text: 'TDEE'),
+            Tab(text: 'Macros'),
+            Tab(text: 'HIIT'),
+          ],
+          labelColor: Theme.of(context).colorScheme.onSurface,
+          indicatorColor: Theme.of(context).colorScheme.primary),
+      Expanded(
+        child: TabBarView(controller: _tabController, children: [
+          _buildBmrTab(),
+          _buildTdeeTab(),
+          _buildMacrosTab(),
+          _buildHiitTab(),
+        ]),
+      ),
+    ]);
+  }
+}
+
+// --------------------------- Habits ---------------------------
+class HabitsPage extends StatefulWidget {
+  final SharedPreferences prefs;
+  const HabitsPage({Key? key, required this.prefs}) : super(key: key);
+  @override
+  State<HabitsPage> createState() => _HabitsPageState();
+}
+
+class Habit {
+  String id;
+  String title;
+  List<String> done;
+  Habit({required this.id, required this.title, List<String>? done})
+      : done = done ?? [];
+  Map<String, dynamic> toJson() => {'id': id, 'title': title, 'done': done};
+  static Habit fromJson(Map<String, dynamic> m) => Habit(
+      id: (m['id'] ?? '').toString(),
+      title: (m['title'] ?? '').toString(),
+      done: (m['done'] is List)
+          ? List<String>.from((m['done'] as List).map((e) => e.toString()))
+          : <String>[]);
+}
+
+class _HabitsPageState extends State<HabitsPage> {
+  List<Habit> items = [];
+  @override
+  void initState() {
+    super.initState();
+    final s = widget.prefs.getString('habits');
+    if (s != null) {
+      try {
+        final arr = jsonDecode(s) as List;
+        items = arr
+            .map((e) => Habit.fromJson(Map<String, dynamic>.from(e)))
+            .toList();
+      } catch (_) {
+        items = [];
+      }
+    }
+  }
+
+  void _save() {
+    widget.prefs
+        .setString('habits', jsonEncode(items.map((e) => e.toJson()).toList()));
+  }
+
+  String _today() {
+    final d = DateTime.now();
+    return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+  }
+
+  void _toggle(Habit h) {
+    final t = _today();
+    setState(() => h.done.contains(t) ? h.done.remove(t) : h.done.add(t));
+    _save();
+  }
+
+  void _add() async {
+    final title = await showDialog<String>(
+        context: context,
+        builder: (_) {
+          final c = TextEditingController();
+          return AlertDialog(
+              title: const Text('New habit'),
+              content: TextField(
+                  controller: c,
+                  decoration:
+                      const InputDecoration(hintText: 'e.g. Drink water')),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancel')),
+                ElevatedButton(
+                    onPressed: () => Navigator.pop(context, c.text),
+                    child: const Text('Add'))
+              ]);
+        });
+    if (title != null && title.trim().isNotEmpty) {
+      setState(() => items.add(Habit(
+          id: DateTime.now().millisecondsSinceEpoch.toString(),
+          title: title.trim())));
+      _save();
+    }
+  }
+
+  void _remove(Habit h) {
+    setState(() => items.removeWhere((e) => e.id == h.id));
+    _save();
+  }
+
+  int _streak(Habit h) {
+    int s = 0;
+    DateTime d = DateTime.now();
+    while (true) {
+      final key =
+          '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+      if (h.done.contains(key)) {
+        s++;
+        d = d.subtract(const Duration(days: 1));
+      } else
+        break;
+    }
+    return s;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Column(children: [
+          Row(children: [
+            const Expanded(
+                child: Text('Habits',
+                    style:
+                        TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
+            IconButton(onPressed: _add, icon: const Icon(Icons.add))
+          ]),
+          const SizedBox(height: 8),
+          Expanded(
+              child: items.isEmpty
+                  ? const Center(child: Text('No habits yet'))
+                  : ListView.builder(
+                      itemCount: items.length,
+                      itemBuilder: (_, i) {
+                        final h = items[i];
+                        final done = h.done.contains(_today());
+                        return Card(
+                            child: ListTile(
+                          leading: IconButton(
+                              icon: Icon(
+                                  done
+                                      ? Icons.check_circle
+                                      : Icons.radio_button_unchecked,
+                                  color: done ? Colors.green : null),
+                              onPressed: () => _toggle(h)),
+                          title: Text(h.title),
+                          subtitle: Text(
+                              'Streak: ${_streak(h)} • Total: ${h.done.length}'),
+                          trailing: PopupMenuButton<String>(
+                              onSelected: (v) {
+                                if (v == 'remove') _remove(h);
+                              },
+                              itemBuilder: (_) => const [
+                                    PopupMenuItem(
+                                        value: 'remove', child: Text('Remove'))
+                                  ]),
+                        ));
+                      }))
+        ]));
+  }
+}
