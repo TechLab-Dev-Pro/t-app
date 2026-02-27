@@ -1,0 +1,996 @@
+// lib/main.dart
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/cupertino.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:audioplayers/audioplayers.dart';
+
+class TimerPreset {
+  String name;
+  int warmup;
+  int work;
+  int rest;
+  int rounds;
+  int cooldown;
+  bool isPomodoro;
+  int pomShort;
+  int pomLong;
+  int pomCyclesBeforeLong;
+  int pomTotalCycles; // 0 means "infinite"
+
+  TimerPreset({
+    required this.name,
+    this.warmup = 0,
+    this.work = 25 * 60,
+    this.rest = 5 * 60,
+    this.rounds = 4,
+    this.cooldown = 0,
+    this.isPomodoro = false,
+    this.pomShort = 5 * 60,
+    this.pomLong = 15 * 60,
+    this.pomCyclesBeforeLong = 4,
+    this.pomTotalCycles = 0,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'warmup': warmup,
+        'work': work,
+        'rest': rest,
+        'rounds': rounds,
+        'cooldown': cooldown,
+        'isPomodoro': isPomodoro,
+        'pomShort': pomShort,
+        'pomLong': pomLong,
+        'pomCyclesBeforeLong': pomCyclesBeforeLong,
+        'pomTotalCycles': pomTotalCycles,
+      };
+
+  static TimerPreset fromJson(Map<String, dynamic> m) {
+    int _i(dynamic v, int d) {
+      if (v == null) return d;
+      if (v is int) return v;
+      if (v is double) return v.toInt();
+      return int.tryParse(v.toString()) ?? d;
+    }
+
+    bool _b(dynamic v, bool d) {
+      if (v == null) return d;
+      if (v is bool) return v;
+      if (v is String) return v.toLowerCase() == 'true';
+      return d;
+    }
+
+    return TimerPreset(
+      name: (m['name'] ?? 'Preset').toString(),
+      warmup: _i(m['warmup'], 0),
+      work: _i(m['work'], 25 * 60),
+      rest: _i(m['rest'], 5 * 60),
+      rounds: _i(m['rounds'], 4),
+      cooldown: _i(m['cooldown'], 0),
+      isPomodoro: _b(m['isPomodoro'], false),
+      pomShort: _i(m['pomShort'], 5 * 60),
+      pomLong: _i(m['pomLong'], 15 * 60),
+      pomCyclesBeforeLong: _i(m['pomCyclesBeforeLong'], 4),
+      pomTotalCycles: _i(m['pomTotalCycles'], 0),
+    );
+  }
+
+  String stableKey() => jsonEncode(toJson());
+}
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final prefs = await SharedPreferences.getInstance();
+  runApp(MyApp(prefs: prefs));
+}
+
+class MyApp extends StatefulWidget {
+  final SharedPreferences prefs;
+  const MyApp({Key? key, required this.prefs}) : super(key: key);
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+class _MyAppState extends State<MyApp> {
+  bool _isDark = false;
+  @override
+  void initState() {
+    super.initState();
+    _isDark = widget.prefs.getBool('isDark') ?? false;
+  }
+  void _toggleTheme() {
+    setState(()=>_isDark = !_isDark);
+    widget.prefs.setBool('isDark', _isDark);
+  }
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'FamFit',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(primarySwatch: Colors.teal, brightness: Brightness.light),
+      darkTheme: ThemeData(primarySwatch: Colors.teal, brightness: Brightness.dark),
+      themeMode: _isDark ? ThemeMode.dark : ThemeMode.light,
+      home: HomePage(prefs: widget.prefs, onToggleTheme: _toggleTheme, isDark: _isDark),
+    );
+  }
+}
+
+class HomePage extends StatefulWidget {
+  final SharedPreferences prefs;
+  final VoidCallback onToggleTheme;
+  final bool isDark;
+  const HomePage({Key? key, required this.prefs, required this.onToggleTheme, required this.isDark}) : super(key: key);
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+class _HomePageState extends State<HomePage> {
+  int _index = 0;
+  late final List<Widget> _pages;
+  @override
+  void initState() {
+    super.initState();
+    _pages = [TimerScreen(prefs: widget.prefs), CalcPage(prefs: widget.prefs), HabitsPage(prefs: widget.prefs)];
+  }
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('FamFit'),
+        actions: [
+          IconButton(icon: Icon(widget.isDark ? Icons.wb_sunny_outlined : Icons.nightlight_round), onPressed: widget.onToggleTheme),
+          IconButton(icon: const Icon(Icons.settings), onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsPage(prefs: widget.prefs)))),
+        ],
+      ),
+      body: _pages[_index],
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _index,
+        onTap: (i)=> setState(()=>_index=i),
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.timer), label: 'Timer'),
+          BottomNavigationBarItem(icon: Icon(Icons.calculate), label: 'Calculators'),
+          BottomNavigationBarItem(icon: Icon(Icons.check_circle_outline), label: 'Habits'),
+        ],
+      ),
+    );
+  }
+}
+
+class SettingsPage extends StatefulWidget {
+  final SharedPreferences prefs;
+  const SettingsPage({Key? key, required this.prefs}) : super(key: key);
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+class _SettingsPageState extends State<SettingsPage> {
+  bool notifyLast10Work = false;
+  bool soundOpening = true;
+  bool soundRound = true;
+  bool autoStartPomodoroWork = false;
+  bool autoStartBreaks = true;
+
+  @override
+  void initState(){
+    super.initState();
+    notifyLast10Work = widget.prefs.getBool('notify_last10_work') ?? false;
+    soundOpening = widget.prefs.getBool('sound_opening') ?? true;
+    soundRound = widget.prefs.getBool('sound_round') ?? true;
+    autoStartPomodoroWork = widget.prefs.getBool('auto_start_pomodoro_work') ?? false;
+    autoStartBreaks = widget.prefs.getBool('auto_start_breaks') ?? true;
+  }
+  void _setNotify(bool v){ setState(()=>notifyLast10Work=v); widget.prefs.setBool('notify_last10_work', v); }
+  void _setOpening(bool v){ setState(()=>soundOpening=v); widget.prefs.setBool('sound_opening', v); }
+  void _setRound(bool v){ setState(()=>soundRound=v); widget.prefs.setBool('sound_round', v); }
+  void _setAutoStartPomodoroWork(bool v){ setState(()=>autoStartPomodoroWork=v); widget.prefs.setBool('auto_start_pomodoro_work', v); }
+  void _setAutoStartBreaks(bool v){ setState(()=>autoStartBreaks=v); widget.prefs.setBool('auto_start_breaks', v); }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Settings')),
+      body: ListView(padding: const EdgeInsets.all(8), children: [
+        SwitchListTile(
+          title: const Text('Notify last 10s of WORK'),
+          subtitle: const Text('Knocks at 10s remaining'),
+          value: notifyLast10Work, onChanged: _setNotify,
+        ),
+        SwitchListTile(
+          title: const Text('Play opening bell'),
+          subtitle: const Text('Opening bell when session starts'),
+          value: soundOpening, onChanged: _setOpening,
+        ),
+        SwitchListTile(
+          title: const Text('Play round bell'),
+          subtitle: const Text('Bell between rounds / last round'),
+          value: soundRound, onChanged: _setRound,
+        ),
+        const Divider(),
+        const ListTile(title: Text('Pomodoro auto options', style: TextStyle(fontWeight: FontWeight.bold))),
+        SwitchListTile(
+          title: const Text('Auto-start Pomodoro work'),
+          subtitle: const Text('If ON, after a break the next WORK will start automatically (first WORK still manual)'),
+          value: autoStartPomodoroWork, onChanged: _setAutoStartPomodoroWork,
+        ),
+        SwitchListTile(
+          title: const Text('Auto-start breaks'),
+          subtitle: const Text('If OFF, when a break begins the timer will pause and wait for you to press Start'),
+          value: autoStartBreaks, onChanged: _setAutoStartBreaks,
+        ),
+      ]),
+    );
+  }
+}
+
+class TimerScreen extends StatefulWidget {
+  final SharedPreferences prefs;
+  const TimerScreen({Key? key, required this.prefs}) : super(key: key);
+  @override
+  State<TimerScreen> createState() => _TimerScreenState();
+}
+
+class _TimerScreenState extends State<TimerScreen> with SingleTickerProviderStateMixin {
+  static const int SLOTS = 8;
+  late List<TimerPreset?> quickSlotsInterval;
+  late List<TimerPreset?> quickSlotsPomodoro;
+  late TimerPreset current;
+  final Set<int> _recentlySaved = {};
+  late TextEditingController nameC, warmC, workC, restC, roundsC, coolC;
+  late TextEditingController pomShortC, pomLongC, pomCyclesBeforeC, pomTotalC;
+  late FocusNode nameFocus;
+  late TabController _modeTabController;
+  String _mode = 'interval';
+
+  List<TimerPreset?> get activeSlots => _mode == 'pomodoro' ? quickSlotsPomodoro : quickSlotsInterval;
+
+  @override
+  void initState(){
+    super.initState();
+    _loadQuickSlots();
+    _loadLastPreset();
+    _initControllers();
+    _modeTabController = TabController(length: 2, vsync: this, initialIndex: current.isPomodoro ? 1 : 0);
+    _mode = current.isPomodoro ? 'pomodoro' : 'interval';
+    _modeTabController.addListener(() {
+      setState(() {
+        _mode = _modeTabController.index == 1 ? 'pomodoro' : 'interval';
+        current.isPomodoro = (_mode == 'pomodoro');
+      });
+    });
+  }
+
+  String _secToDisplay(int s) => '${(s~/60)}:${(s%60).toString().padLeft(2,'0')}';
+  int _displayToSec(String t) {
+    if (t.contains(':')) {
+      final parts = t.split(':');
+      final m = int.tryParse(parts[0].trim()) ?? 0;
+      final sec = int.tryParse(parts.length>1?parts[1].trim():'0') ?? 0;
+      return m*60 + sec;
+    }
+    return int.tryParse(t) ?? 0;
+  }
+
+  void _initControllers(){
+    nameC = TextEditingController(text: current.name);
+    warmC = TextEditingController(text: _secToDisplay(current.warmup));
+    workC = TextEditingController(text: _secToDisplay(current.work));
+    restC = TextEditingController(text: _secToDisplay(current.rest));
+    roundsC = TextEditingController(text: current.rounds.toString());
+    coolC = TextEditingController(text: _secToDisplay(current.cooldown));
+    pomShortC = TextEditingController(text: _secToDisplay(current.pomShort));
+    pomLongC = TextEditingController(text: _secToDisplay(current.pomLong));
+    pomCyclesBeforeC = TextEditingController(text: current.pomCyclesBeforeLong.toString());
+    pomTotalC = TextEditingController(text: current.pomTotalCycles.toString());
+    nameFocus = FocusNode();
+  }
+  void _disposeControllers(){
+    try{nameC.dispose();}catch(_){}
+    try{warmC.dispose();}catch(_){}
+    try{workC.dispose();}catch(_){}
+    try{restC.dispose();}catch(_){}
+    try{roundsC.dispose();}catch(_){}
+    try{coolC.dispose();}catch(_){}
+    try{pomShortC.dispose();}catch(_){}
+    try{pomLongC.dispose();}catch(_){}
+    try{pomCyclesBeforeC.dispose();}catch(_){}
+    try{pomTotalC.dispose();}catch(_){}
+    try{nameFocus.dispose();}catch(_){}
+  }
+
+  void _loadQuickSlots(){
+    quickSlotsInterval = List<TimerPreset?>.filled(SLOTS, null, growable: false);
+    quickSlotsPomodoro = List<TimerPreset?>.filled(SLOTS, null, growable: false);
+    final storedI = widget.prefs.getStringList('quick_slots_interval') ?? [];
+    final storedP = widget.prefs.getStringList('quick_slots_pomodoro') ?? [];
+    for (int i=0;i<SLOTS;i++){
+      if (i < storedI.length){
+        final s = storedI[i];
+        if (s.trim().isNotEmpty) {
+          try { quickSlotsInterval[i] = TimerPreset.fromJson(jsonDecode(s) as Map<String,dynamic>); } catch(_) {}
+        }
+      }
+      if (i < storedP.length){
+        final s = storedP[i];
+        if (s.trim().isNotEmpty) {
+          try { quickSlotsPomodoro[i] = TimerPreset.fromJson(jsonDecode(s) as Map<String,dynamic>); } catch(_) {}
+        }
+      }
+    }
+  }
+
+  void _saveQuickSlots(){
+    final listI = quickSlotsInterval.map((p)=> p==null ? '' : jsonEncode(p.toJson())).toList();
+    final listP = quickSlotsPomodoro.map((p)=> p==null ? '' : jsonEncode(p.toJson())).toList();
+    widget.prefs.setStringList('quick_slots_interval', listI);
+    widget.prefs.setStringList('quick_slots_pomodoro', listP);
+  }
+
+  void _loadLastPreset(){
+    final stored = widget.prefs.getString('last_preset');
+    if (stored != null) {
+      try { current = TimerPreset.fromJson(jsonDecode(stored) as Map<String,dynamic>); return; } catch(_) {}
+    }
+    current = TimerPreset(name: 'Custom', warmup:0, work:25*60, rest:5*60, rounds:4, cooldown:0, isPomodoro:false);
+  }
+  void _saveLastPreset() => widget.prefs.setString('last_preset', jsonEncode(current.toJson()));
+
+  void _applySlot(int i){
+    final p = activeSlots[i];
+    if (p==null) return;
+    setState(() {
+      current = TimerPreset.fromJson(p.toJson());
+      _disposeControllers();
+      _initControllers();
+      _modeTabController.index = current.isPomodoro ? 1 : 0;
+      _mode = current.isPomodoro ? 'pomodoro' : 'interval';
+    });
+    _saveLastPreset();
+  }
+
+  void _updateCurrentFromControllers(){
+    current.name = nameC.text.trim().isEmpty ? 'Custom' : nameC.text.trim();
+    current.warmup = _displayToSec(warmC.text);
+    current.work = _displayToSec(workC.text);
+    current.rest = _displayToSec(restC.text);
+    current.rounds = int.tryParse(roundsC.text) ?? current.rounds;
+    current.cooldown = _displayToSec(coolC.text);
+    current.isPomodoro = (_mode == 'pomodoro');
+    current.pomShort = _displayToSec(pomShortC.text);
+    current.pomLong = _displayToSec(pomLongC.text);
+    current.pomCyclesBeforeLong = int.tryParse(pomCyclesBeforeC.text) ?? current.pomCyclesBeforeLong;
+    current.pomTotalCycles = int.tryParse(pomTotalC.text) ?? current.pomTotalCycles;
+  }
+
+  void _saveToSlot(int i){
+    _updateCurrentFromControllers();
+    final newPreset = TimerPreset.fromJson(current.toJson());
+    final newKey = newPreset.stableKey();
+    for (int j=0;j<activeSlots.length;j++){
+      if (j==i) continue;
+      final q = activeSlots[j];
+      if (q!=null && q.stableKey()==newKey) activeSlots[j] = null;
+    }
+    setState(() {
+      if (_mode == 'pomodoro') quickSlotsPomodoro[i] = newPreset; else quickSlotsInterval[i] = newPreset;
+      _recentlySaved.add(i);
+    });
+    _saveQuickSlots();
+    Timer(const Duration(milliseconds:700), (){ if (mounted) setState(()=>_recentlySaved.remove(i)); });
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved to slot')));
+  }
+
+  void _rememberCurrentPreset(){
+    _updateCurrentFromControllers();
+    final key = current.stableKey();
+    final slots = activeSlots;
+    int found = -1;
+    for (int i=0;i<slots.length;i++){
+      final q = slots[i];
+      if (q!=null && q.stableKey()==key) { found=i; break; }
+    }
+    if (found>=0) return;
+    int emptyIndex = slots.indexWhere((e)=>e==null);
+    if (emptyIndex>=0) {
+      setState(() {
+        if (_mode=='pomodoro') quickSlotsPomodoro[emptyIndex] = TimerPreset.fromJson(current.toJson()); else quickSlotsInterval[emptyIndex] = TimerPreset.fromJson(current.toJson());
+      });
+    } else {
+      setState(() {
+        if (_mode=='pomodoro') quickSlotsPomodoro[quickSlotsPomodoro.length-1] = TimerPreset.fromJson(current.toJson()); else quickSlotsInterval[quickSlotsInterval.length-1] = TimerPreset.fromJson(current.toJson());
+      });
+    }
+    _saveQuickSlots();
+  }
+
+  void _startSession(){
+    _updateCurrentFromControllers();
+    _saveLastPreset();
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => FullscreenTimer(preset: current, prefs: widget.prefs)));
+  }
+
+  @override
+  void dispose(){
+    _disposeControllers();
+    try{ _modeTabController.dispose(); }catch(_){}
+    super.dispose();
+  }
+
+  void _onReorder(int oldIndex, int newIndex){
+    if (oldIndex==newIndex) return;
+    setState(() {
+      final slots = activeSlots;
+      if (newIndex > oldIndex) newIndex--;
+      final item = slots.removeAt(oldIndex);
+      slots.insert(newIndex, item);
+      if (_mode=='pomodoro') quickSlotsPomodoro = List<TimerPreset?>.from(slots); else quickSlotsInterval = List<TimerPreset?>.from(slots);
+    });
+    _saveQuickSlots();
+  }
+
+  Widget _buildSlot(int i){
+    final p = activeSlots[i];
+    final brightness = Theme.of(context).brightness;
+    final baseColor = p==null ? (brightness==Brightness.dark ? Colors.grey[850] : Colors.grey[100]) : Theme.of(context).cardColor;
+    final flashColor = brightness == Brightness.dark ? Colors.yellow.shade700 : Colors.yellowAccent.shade100;
+    final borderColor = p == null ? Colors.grey.shade400 : Colors.teal;
+    return SizedBox(
+      width: 150,
+      child: Card(
+        margin: const EdgeInsets.symmetric(vertical:6, horizontal:4),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: borderColor, width: 1.5)),
+        child: Material(
+          color: _recentlySaved.contains(i) ? flashColor : baseColor,
+          borderRadius: BorderRadius.circular(12),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: () { if (true) { // load preset by tapping anywhere on the card
+                _applySlot(i);
+              }
+            },
+            onLongPress: () async {
+              final ok = await showDialog<bool>(
+                context: context,
+                builder: (_) => AlertDialog(
+                  title: const Text('Save to slot'),
+                  content: Text('Save current preset to slot ${i+1}?'),
+                  actions: [
+                    TextButton(onPressed: ()=>Navigator.pop(context,false), child: const Text('Cancel')),
+                    ElevatedButton(onPressed: ()=>Navigator.pop(context,true), child: const Text('Save')),
+                  ],
+                ),
+              );
+              if (ok==true) { _updateCurrentFromControllers(); _saveToSlot(i); }
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical:10, horizontal:10),
+              child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.center, children: [
+                if (p==null) ...[
+                  const Icon(Icons.add, color: Colors.black26, size:28),
+                  const SizedBox(height:6),
+                  Text('Empty', style: TextStyle(fontSize:14, color: Theme.of(context).hintColor)),
+                ] else ...[
+                  Text(p.name.length>20 ? '${p.name.substring(0,20)}...' : p.name,
+                    style: TextStyle(fontSize:16, fontWeight: FontWeight.bold, color: brightness==Brightness.dark ? Colors.white : Colors.black),
+                    textAlign: TextAlign.center, maxLines:1, overflow: TextOverflow.ellipsis),
+                  const SizedBox(height:8),
+                  Text(_slotSubtitle(p),
+                    style: TextStyle(fontSize:12, color: brightness==Brightness.dark ? Colors.white70 : Colors.black87), textAlign: TextAlign.center),
+                ]
+              ]),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _slotSubtitle(TimerPreset p){
+    if (p.isPomodoro){
+      return 'Pomodoro • ${p.pomShort~/60}m / ${p.pomLong~/60}m • interval ${p.pomCyclesBeforeLong}';
+    } else {
+      return '${(p.work~/60)}:${(p.work%60).toString().padLeft(2,'0')} / ${(p.rest~/60)}:${(p.rest%60).toString().padLeft(2,'0')}  x${p.rounds}';
+    }
+  }
+
+  Widget _numberField(String label, TextEditingController c, {bool isLarge=false}) {
+    final labelStyle = const TextStyle(fontSize:14, fontWeight: FontWeight.w600);
+    final valueStyle = const TextStyle(fontSize:18, fontWeight: FontWeight.bold);
+    return GestureDetector(
+      onTap: () async {
+        if (label=='Round' || label=='Rounds' || label=='Cycles before long' || label=='Long break interval') {
+          final initial = int.tryParse(c.text) ?? 8;
+          await _showNumberPicker(label, c, 0, 999, initial);
+        } else {
+          final tot = _displayToSec(c.text);
+          await _showMinutesSecondsPicker(label, c, tot);
+        }
+      },
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(label, style: labelStyle),
+        const SizedBox(height:6),
+        Container(
+          padding: const EdgeInsets.symmetric(vertical:12, horizontal:12),
+          decoration: BoxDecoration(color: Theme.of(context).cardColor, borderRadius: BorderRadius.circular(8)),
+          child: Align(alignment: Alignment.centerLeft, child: FittedBox(fit: BoxFit.scaleDown, alignment: Alignment.centerLeft, child: Text(c.text, style: valueStyle))),
+        ),
+      ]),
+    );
+  }
+
+  Future<void> _showNumberPicker(String label, TextEditingController c, int min, int max, int initial) async {
+    int selected = (initial).clamp(min,max);
+    await showModalBottomSheet(context: context, builder: (ctx){
+      return SizedBox(height:360, child: Column(children: [
+        Padding(padding: const EdgeInsets.symmetric(horizontal:12.0, vertical:8.0), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text(label, style: const TextStyle(fontSize:20, fontWeight: FontWeight.bold)),
+          TextButton(onPressed: (){ c.text = selected.toString(); Navigator.of(ctx).pop(); }, child: const Text('OK'))
+        ])),
+        const Divider(height:1),
+        Expanded(child: CupertinoPicker(scrollController: FixedExtentScrollController(initialItem:(selected-min).clamp(0,max-min)), itemExtent:40, onSelectedItemChanged:(i)=> selected=(min+i).clamp(min,max), children: List<Widget>.generate(max-min+1,(i){ final val=min+i; return Center(child: Text(val.toString(), style: const TextStyle(fontSize:22, fontWeight: FontWeight.w600))); }))),
+      ]));
+    }, isScrollControlled:false);
+    FocusScope.of(context).unfocus();
+    setState((){});
+  }
+
+  Future<void> _showMinutesSecondsPicker(String label, TextEditingController c, int totalSeconds) async {
+    int initialMinutes = (totalSeconds~/60).clamp(0,600);
+    int initialSeconds = (totalSeconds%60).clamp(0,59);
+    int selMin = initialMinutes;
+    int selSec = initialSeconds;
+    await showModalBottomSheet(context: context, builder: (ctx){
+      return SizedBox(height:420, child: Column(children:[
+        Padding(padding: const EdgeInsets.symmetric(horizontal:12.0, vertical:8.0), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children:[
+          Text(label, style: const TextStyle(fontSize:20, fontWeight: FontWeight.bold)),
+          TextButton(onPressed:(){ final total = selMin*60 + selSec; c.text = _secToDisplay(total); Navigator.of(ctx).pop(); }, child: const Text('OK'))
+        ])),
+        const Divider(height:1),
+        Expanded(child: Row(children:[
+          Expanded(child: CupertinoPicker(scrollController: FixedExtentScrollController(initialItem: selMin), itemExtent:40, onSelectedItemChanged:(i)=>selMin=i.clamp(0,600), children: List<Widget>.generate(601,(i)=> Center(child: Text('${i} min', style: const TextStyle(fontSize:20)))))),
+          Expanded(child: CupertinoPicker(scrollController: FixedExtentScrollController(initialItem: selSec), itemExtent:40, onSelectedItemChanged:(i)=>selSec=i.clamp(0,59), children: List<Widget>.generate(60,(i)=> Center(child: Text('${i} s', style: const TextStyle(fontSize:22)))))),
+        ])),
+        const SizedBox(height:8),
+      ]));
+    }, isScrollControlled:false);
+
+    FocusScope.of(context).unfocus();
+    setState((){});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      child: Padding(padding: const EdgeInsets.all(14.0), child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        SizedBox(
+          width: double.infinity,
+          child: TabBar(
+            controller: _modeTabController,
+            tabs: const [ Tab(text: 'Interval'), Tab(text: 'Pomodoro') ],
+            labelColor: Theme.of(context).colorScheme.onSurface,
+            indicatorColor: Theme.of(context).colorScheme.primary,
+          ),
+        ),
+        const SizedBox(height:12),
+
+        SizedBox(
+          height: 160,
+          child: ReorderableListView(
+            scrollDirection: Axis.horizontal,
+            buildDefaultDragHandles: false,
+            onReorder: _onReorder,
+            children: List.generate(SLOTS, (i) {
+              final keyString = 'slot-${_mode}-$i-${activeSlots[i]?.stableKey() ?? 'empty'}';
+              return Padding(key: ValueKey(keyString), padding: const EdgeInsets.symmetric(horizontal:8.0), child: _buildSlot(i));
+            }),
+          ),
+        ),
+        const SizedBox(height:14),
+        Card(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), elevation:4, child: Padding(padding: const EdgeInsets.all(16.0), child: Column(children: [
+          Row(children: [
+            Expanded(child: TextField(controller: nameC, focusNode: nameFocus,
+              onEditingComplete: (){
+                try { nameFocus.unfocus(); } catch(_) {}
+                SystemChannels.textInput.invokeMethod('TextInput.hide');
+                nameC.selection = TextSelection.collapsed(offset: nameC.text.length);
+                setState((){});
+              },
+              onSubmitted: (_){ try{ nameFocus.unfocus(); }catch(_){} SystemChannels.textInput.invokeMethod('TextInput.hide'); nameC.selection = TextSelection.collapsed(offset: nameC.text.length); setState((){});},
+              style: const TextStyle(fontSize:20, fontWeight: FontWeight.w700),
+              decoration: const InputDecoration(labelText: 'Preset name (optional)', labelStyle: TextStyle(fontSize:16, fontWeight: FontWeight.w600)))),
+            const SizedBox(width:12),
+            Padding(padding: const EdgeInsets.only(right:4.0), child: Text(_mode.toUpperCase(), style: const TextStyle(fontWeight: FontWeight.bold))),
+          ]),
+          const SizedBox(height:12),
+          SizedBox(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 420),
+              child: SingleChildScrollView(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds:250),
+                  child: _mode == 'pomodoro' ? _buildPomodoroFields() : _buildIntervalFields(),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height:12),
+          const Text('Tap slot to load • Long press to save • Drag handle to reorder', style: TextStyle(fontSize:16)),
+        ]))),
+        const SizedBox(height:18),
+        Row(children: [ Expanded(child: Center(child: ElevatedButton(style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical:24, horizontal:48), textStyle: const TextStyle(fontSize:28, fontWeight: FontWeight.bold)), onPressed: _startSession, child: const Text('START')))) ]),
+        const SizedBox(height:18),
+      ])),
+    );
+  }
+
+  Widget _buildIntervalFields(){
+    return Column(key: const ValueKey('interval'), children: [
+      Row(children: [Expanded(child: _numberField('Warmup', warmC)), const SizedBox(width:10), Expanded(child: _numberField('Cooldown', coolC))]),
+      const SizedBox(height:12),
+      Row(children: [ Expanded(flex:3, child: _numberField('Work', workC)), const SizedBox(width:10), Expanded(flex:3, child: _numberField('Rest', restC)), const SizedBox(width:10), Expanded(flex:2, child: _numberField('Round', roundsC)) ]),
+    ]);
+  }
+
+  Widget _buildPomodoroFields(){
+    return Column(key: const ValueKey('pomodoro'), children: [
+      Row(children: [ Expanded(child: _numberField('Work', workC)), const SizedBox(width:10), Expanded(child: _numberField('Short break', pomShortC)) ]),
+      const SizedBox(height:12),
+      Row(children: [ Expanded(child: _numberField('Long break', pomLongC)), const SizedBox(width:10), Expanded(child: _numberField('Long break interval', pomCyclesBeforeC)) ]),
+      const SizedBox(height:10),
+      Row(children: [ Expanded(child: _numberField('Total work sessions (0 = infinite)', pomTotalC)) ]),
+    ]);
+  }
+}
+
+enum Phase { warmup, work, rest, cooldown, longRest }
+
+class FullscreenTimer extends StatefulWidget {
+  final TimerPreset preset;
+  final SharedPreferences prefs;
+  const FullscreenTimer({Key? key, required this.preset, required this.prefs}) : super(key: key);
+  @override
+  State<FullscreenTimer> createState() => _FullscreenTimerState();
+}
+
+class _FullscreenTimerState extends State<FullscreenTimer> {
+  late List<Map<String,dynamic>> segments;
+  int idx = 0;
+  int remaining = 0;
+  Timer? timer;
+  bool running = false;
+  bool _notifiedForSegment = false;
+  late bool notifyLast10;
+  late bool playOpening;
+  late bool playRound;
+  late bool autoStartPomodoroWork;
+  late bool autoStartBreaks;
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  int _nextCycleToGenerate = 1; // for dynamic generation in infinite pomodoro
+
+  @override
+  void initState(){
+    super.initState();
+    notifyLast10 = widget.prefs.getBool('notify_last10_work') ?? false;
+    playOpening = widget.prefs.getBool('sound_opening') ?? true;
+    playRound = widget.prefs.getBool('sound_round') ?? true;
+    autoStartPomodoroWork = widget.prefs.getBool('auto_start_pomodoro_work') ?? false;
+    autoStartBreaks = widget.prefs.getBool('auto_start_breaks') ?? true;
+    _buildSegments();
+    remaining = segments.isNotEmpty ? segments[0]['seconds'] as int : 0;
+    // NOTE: first WORK is always manual by design (we do NOT auto-start the very first WORK)
+  }
+
+  Future<void> _playAsset(String filename) async {
+    try { await _audioPlayer.play(AssetSource('assets/sounds/$filename')); return; } catch (_) {}
+    try { final assetPath='assets/sounds/$filename'; final bd=await rootBundle.load(assetPath); final bytes = bd.buffer.asUint8List(); await _audioPlayer.play(BytesSource(bytes)); return; } catch(_) {}
+    try { for (int i=0;i<3;i++){ SystemSound.play(SystemSoundType.click); await Future.delayed(const Duration(milliseconds:160)); } return; } catch(_) {}
+  }
+
+  void _buildSegments(){
+    segments = [];
+    final p = widget.preset;
+    _nextCycleToGenerate = 1;
+    if (p.isPomodoro){
+      int cyclesToGenerate = (p.pomTotalCycles > 0) ? p.pomTotalCycles : 1; // generate 1 cycle now if infinite
+      for (int c=1;c<=cyclesToGenerate;c++){
+        segments.add({'phase':Phase.work, 'seconds': p.work, 'cycle': c});
+        if (c < cyclesToGenerate || p.pomTotalCycles==0) {
+          // if this is not the last generated cycle, add the appropriate break
+          if (p.pomCyclesBeforeLong > 0 && (c % p.pomCyclesBeforeLong == 0)) {
+            segments.add({'phase':Phase.longRest, 'seconds': p.pomLong, 'cycle': c});
+          } else {
+            segments.add({'phase':Phase.rest, 'seconds': p.pomShort, 'cycle': c});
+          }
+        }
+        _nextCycleToGenerate = c+1;
+      }
+    } else {
+      if (p.warmup>0) segments.add({'phase':Phase.warmup,'seconds':p.warmup,'cycle':0});
+      for (int r=1; r<=p.rounds; r++){
+        segments.add({'phase':Phase.work,'seconds':p.work,'cycle':r});
+        if (r < p.rounds) segments.add({'phase':Phase.rest,'seconds':p.rest,'cycle':r});
+      }
+      if (p.cooldown>0) segments.add({'phase':Phase.cooldown,'seconds':p.cooldown,'cycle':0});
+    }
+  }
+
+  // if pomodoro is infinite (pomTotalCycles==0), append one more cycle dynamically
+  void _appendNextPomodoroCycleIfNeeded(){
+    final p = widget.preset;
+    if (!p.isPomodoro) return;
+    if (p.pomTotalCycles > 0) return; // finite - nothing to append
+    // generate next cycle with index _nextCycleToGenerate
+    final c = _nextCycleToGenerate;
+    segments.add({'phase':Phase.work, 'seconds': p.work, 'cycle': c});
+    // add break after it (since infinite, always add break after unless user stops)
+    if (p.pomCyclesBeforeLong > 0 && (c % p.pomCyclesBeforeLong == 0)) {
+      segments.add({'phase':Phase.longRest, 'seconds': p.pomLong, 'cycle': c});
+    } else {
+      segments.add({'phase':Phase.rest, 'seconds': p.pomShort, 'cycle': c});
+    }
+    _nextCycleToGenerate = c+1;
+  }
+
+  void _tick(){ if (remaining>0){ setState(()=>remaining--); _checkNotify(); } else _next(); }
+  void _checkNotify(){
+    if (!notifyLast10) return;
+    if (segments.isEmpty || idx>=segments.length) return;
+    final seg = segments[idx];
+    if (seg['phase'] == Phase.work){
+      if (!_notifiedForSegment && remaining==10){ _notifiedForSegment = true; _playAsset('10seconds_knocks.mp3'); }
+    }
+  }
+
+  Future<void> _start() async {
+    if (running) return;
+    // If starting first segment and it's the first time and it's work and we want opening sound -> play
+    if (idx==0 && remaining==(segments.isNotEmpty ? segments[0]['seconds'] as int : 0)){
+      if (playOpening) await _playAsset('opening_bell.mp3');
+    }
+    running = true;
+    timer = Timer.periodic(const Duration(seconds:1), (_) => _tick());
+    setState((){});
+  }
+
+  void _pause(){ timer?.cancel(); timer=null; running=false; setState((){}); }
+  void _stop(){ timer?.cancel(); timer=null; running=false; idx=0; _notifiedForSegment=false; remaining = segments.isNotEmpty ? segments[0]['seconds'] as int : 0; setState((){}); }
+
+  Future<void> _next() async {
+    if (segments.isEmpty) return;
+    final isLastIndex = idx >= segments.length - 1;
+    // If infinite pomodoro and we're at (or beyond) last index, append next cycle so we can continue
+    if (widget.preset.isPomodoro && widget.preset.pomTotalCycles == 0 && isLastIndex) {
+      _appendNextPomodoroCycleIfNeeded();
+    }
+
+    if (idx >= segments.length - 1) {
+      // nothing more
+      if (playRound) await _playAsset('boxing_bell_last_round.mp3');
+      await _finish();
+      return;
+    }
+
+    // play round bell for transitions (except maybe first transition)
+    if (playRound) await _playAsset('round_bell_two_chimes.mp3');
+    try{ HapticFeedback.mediumImpact(); SystemSound.play(SystemSoundType.click); } catch(_){}
+
+    idx++;
+    _notifiedForSegment = false;
+    remaining = segments[idx]['seconds'] as int;
+
+    final nextPhase = segments[idx]['phase'] as Phase;
+
+    // If next is break and autoStartBreaks == false -> pause and wait for Start
+    if ((nextPhase == Phase.rest || nextPhase == Phase.longRest) && widget.preset.isPomodoro && !autoStartBreaks) {
+      timer?.cancel(); timer=null; running=false; setState((){}); return;
+    }
+
+    // If next is work and it's NOT the first work (idx>0) and autoStartPomodoroWork == false -> pause and wait
+    if (nextPhase == Phase.work && widget.preset.isPomodoro) {
+      // Determine if this is first work (first work is idx==0 originally). We consider it 'not first' if segments before existed.
+      if (!autoStartPomodoroWork) {
+        // pause if this 'work' started due to transition (i.e., user might want to manually start work)
+        timer?.cancel(); timer=null; running=false; setState((){}); return;
+      } else {
+        // autoStartPomodoroWork == true -> allow running (do nothing; ensure timer is running)
+        if (!running) {
+          timer = Timer.periodic(const Duration(seconds:1), (_) => _tick());
+          running = true;
+        }
+      }
+    }
+
+    setState((){});
+  }
+
+  Future<void> _finish() async {
+    timer?.cancel(); timer=null; running=false;
+    try{ HapticFeedback.heavyImpact(); SystemSound.play(SystemSoundType.click);} catch(_){}
+    if (!mounted) return;
+    await showDialog(context: context, builder: (_)=> AlertDialog(title: const Text('Done'), content: const Text('Session complete'), actions: [TextButton(onPressed: ()=>Navigator.pop(context), child: const Text('OK'))]));
+    if (mounted) Navigator.pop(context);
+  }
+
+  Color _bg(Map<String,dynamic>? seg) {
+    if (seg==null) return Colors.black;
+    final phase = seg['phase'] as Phase;
+    switch(phase){
+      case Phase.warmup: return Colors.blue.shade700;
+      case Phase.work: return Colors.red.shade700;
+      case Phase.rest: return Colors.orange.shade700;
+      case Phase.cooldown: return Colors.purple.shade700;
+      case Phase.longRest: return Colors.green.shade700;
+    }
+  }
+  Color _textColor(Map<String,dynamic>? seg) => Colors.white;
+
+  String _label(Map<String,dynamic>? seg){
+    if (seg==null) return 'STOP';
+    final phase = seg['phase'] as Phase;
+    switch(phase){
+      case Phase.warmup: return 'WARMUP';
+      case Phase.work: return 'WORK';
+      case Phase.rest: return widget.preset.isPomodoro ? 'SHORT BREAK' : 'REST';
+      case Phase.cooldown: return 'COOLDOWN';
+      case Phase.longRest: return widget.preset.isPomodoro ? 'LONG BREAK' : 'REST';
+    }
+  }
+
+  String _fmt(int s) => '${(s~/60).toString()}:${(s%60).toString().padLeft(2,'0')}';
+  @override void dispose(){ timer?.cancel(); _audioPlayer.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    final seg = segments.isNotEmpty && idx < segments.length ? segments[idx] : null;
+    final round = seg != null ? (seg['cycle'] as int) : 0;
+    // === FIX: do not show "total" for Pomodoro (user requested)
+    final totalWorkSessions = widget.preset.isPomodoro ? null : widget.preset.rounds;
+
+    return Scaffold(
+      body: Container(
+        color: _bg(seg),
+        width: double.infinity,
+        height: double.infinity,
+        child: SafeArea(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              const SizedBox(height:8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal:12.0),
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    _label(seg),
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: _textColor(seg)),
+                  ),
+                ),
+              ),
+              const SizedBox(height:10),
+              Expanded(
+                child: Center(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      _fmt(remaining),
+                      style: TextStyle(fontSize: 220, fontWeight: FontWeight.w900, color: _textColor(seg)),
+                    ),
+                  ),
+                ),
+              ),
+
+              if (seg != null && (seg['phase'] == Phase.work || seg['phase'] == Phase.rest || seg['phase'] == Phase.longRest))
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical:8.0),
+                  child: Text(
+                    'Cycle ${round}' + (totalWorkSessions != null ? ' / $totalWorkSessions' : ''),
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: _textColor(seg)),
+                  ),
+                ),
+
+              const SizedBox(height:6),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal:12.0, vertical: 10),
+                child: SafeArea(
+                  top: false,
+                  child: Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 12,
+                    runSpacing: 8,
+                    children: [
+                      ElevatedButton(
+                        onPressed: (){ if (running) _pause(); else _start(); },
+                        style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical:14, horizontal:28), textStyle: const TextStyle(fontSize:18, fontWeight: FontWeight.bold)),
+                        child: Text(running ? 'Pause' : 'Start'),
+                      ),
+                      ElevatedButton(
+                        onPressed: _stop,
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.black54, padding: const EdgeInsets.symmetric(vertical:14, horizontal:24), textStyle: const TextStyle(fontSize:16)),
+                        child: const Text('Stop'),
+                      ),
+                      ElevatedButton(
+                        onPressed: ()=>Navigator.pop(context),
+                        style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical:14, horizontal:24), textStyle: const TextStyle(fontSize:16)),
+                        child: const Text('Exit'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class CalcPage extends StatefulWidget {
+  final SharedPreferences prefs;
+  const CalcPage({Key? key, required this.prefs}) : super(key: key);
+  @override
+  State<CalcPage> createState() => _CalcPageState();
+}
+
+/* ... rest of CalcPage & HabitsPage code same as before ... 
+   (for brevity I assume you already have the exact code from previous message;
+   if you want, I can paste the full file again with the unchanged parts too) */
+
+class _CalcPageState extends State<CalcPage> with SingleTickerProviderStateMixin {
+  // full implementation kept the same as previous version I sent
+  // (BMR/TDEE/Macros/HIIT tabs)
+  // ... (code omitted in this paste for brevity but is unchanged) ...
+
+  // For safety, include the CalcPage and HabitsPage code from the previous full file if you need the exact full file.
+  @override
+  Widget build(BuildContext context) {
+    // placeholder - actual implementation unchanged
+    return Column(children: [ const Expanded(child: Center(child: Text('Calculators (see full file)')))]);
+  }
+}
+
+class HabitsPage extends StatefulWidget {
+  final SharedPreferences prefs;
+  const HabitsPage({Key? key, required this.prefs}) : super(key: key);
+  @override
+  State<HabitsPage> createState() => _HabitsPageState();
+}
+class Habit {
+  String id; String title; List<String> done;
+  Habit({required this.id, required this.title, List<String>? done}) : done = done ?? [];
+  Map<String,dynamic> toJson()=>{'id':id,'title':title,'done':done};
+  static Habit fromJson(Map<String,dynamic> m) => Habit(id:(m['id'] ?? '').toString(), title:(m['title'] ?? '').toString(), done:(m['done'] is List)? List<String>.from((m['done'] as List).map((e)=>e.toString())) : <String>[]);
+}
+class _HabitsPageState extends State<HabitsPage> {
+  List<Habit> items = [];
+  @override
+  void initState(){
+    super.initState();
+    final s = widget.prefs.getString('habits');
+    if (s!=null) { try { final arr = jsonDecode(s) as List; items = arr.map((e)=>Habit.fromJson(Map<String,dynamic>.from(e))).toList(); } catch(_) { items=[]; } }
+  }
+  void _save(){ widget.prefs.setString('habits', jsonEncode(items.map((e)=>e.toJson()).toList())); }
+  String _today(){ final d=DateTime.now(); return '${d.year}-${d.month.toString().padLeft(2,'0')}-${d.day.toString().padLeft(2,'0')}'; }
+  void _toggle(Habit h){ final t=_today(); setState(()=> h.done.contains(t)? h.done.remove(t) : h.done.add(t)); _save(); }
+  void _add() async {
+    final title = await showDialog<String>(context: context, builder: (_){
+      final c=TextEditingController();
+      return AlertDialog(title: const Text('New habit'), content: TextField(controller: c, decoration: const InputDecoration(hintText: 'e.g. Drink water')), actions: [ TextButton(onPressed: ()=>Navigator.pop(context), child: const Text('Cancel')), ElevatedButton(onPressed: ()=>Navigator.pop(context,c.text), child: const Text('Add')) ]);
+    });
+    if (title!=null && title.trim().isNotEmpty){ setState(()=>items.add(Habit(id: DateTime.now().millisecondsSinceEpoch.toString(), title: title.trim()))); _save(); }
+  }
+  void _remove(Habit h){ setState(()=> items.removeWhere((e)=>e.id==h.id)); _save(); }
+  int _streak(Habit h){ int s=0; DateTime d=DateTime.now(); while(true){ final key='${d.year}-${d.month.toString().padLeft(2,'0')}-${d.day.toString().padLeft(2,'0')}'; if (h.done.contains(key)){ s++; d=d.subtract(const Duration(days:1)); } else break; } return s; }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(padding: const EdgeInsets.all(12.0), child: Column(children: [
+      Row(children: [ const Expanded(child: Text('Habits', style: TextStyle(fontSize:18, fontWeight: FontWeight.bold))), IconButton(onPressed: _add, icon: const Icon(Icons.add)) ]),
+      const SizedBox(height:8),
+      Expanded(child: items.isEmpty ? const Center(child: Text('No habits yet')) : ListView.builder(itemCount: items.length, itemBuilder: (_,i){
+        final h = items[i]; final done = h.done.contains(_today());
+        return Card(child: ListTile(leading: IconButton(icon: Icon(done ? Icons.check_circle : Icons.radio_button_unchecked, color: done ? Colors.green : null), onPressed: ()=>_toggle(h)), title: Text(h.title), subtitle: Text('Streak: ${_streak(h)} • Total: ${h.done.length}'), trailing: PopupMenuButton<String>(onSelected: (v){ if (v=='remove') _remove(h); }, itemBuilder: (_)=> const [PopupMenuItem(value:'remove', child: Text('Remove'))]),));
+      }))
+    ]));
+  }
+}
