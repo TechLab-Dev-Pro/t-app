@@ -6,7 +6,10 @@ A clean and focused Flutter app for interval training and infinite Pomodoro sess
 
 ## Overview
 
-FamFit is a lightweight productivity and workout timer designed for long-running sessions.
+FamFit is a production-style Flutter app designed for:
+- interval training sessions
+- Pomodoro productivity cycles
+- long-running timers with reliable resume system
 
 ### Core Features
 
